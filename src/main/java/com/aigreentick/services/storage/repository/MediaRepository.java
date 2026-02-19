@@ -27,8 +27,8 @@ public interface MediaRepository extends JpaRepository<Media, Long>, MediaReposi
     boolean existsByStoredFilename(String storedFilename);
 
     /** Used for duplicate detection */
-    boolean existsByChecksumAndOrganisationIdAndProjectId(
-            String checksum, Long organisationId, Long projectId);
+//     boolean existsByChecksumAndOrganisationIdAndProjectId(
+//             String checksum, Long organisationId, Long projectId);
 
     long countByOrganisationIdAndProjectId(Long organisationId, Long projectId);
 

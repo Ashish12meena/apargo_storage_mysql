@@ -19,8 +19,7 @@ import lombok.*;
         @Index(name = "idx_media_org_project_type_created",  columnList = "organisation_id, project_id, media_type, created_at DESC"),
         @Index(name = "idx_media_media_id",                  columnList = "media_id"),
         @Index(name = "idx_media_stored_filename",           columnList = "stored_filename"),
-        @Index(name = "idx_media_status",                    columnList = "status"),
-        @Index(name = "idx_media_checksum_org_project",      columnList = "checksum, organisation_id, project_id")
+        @Index(name = "idx_media_status",                    columnList = "status")
     }
 )
 @Getter
@@ -48,9 +47,9 @@ public class Media {
     @Column(name = "file_size", nullable = false)
     private Long fileSize;
 
-    /** SHA-256 hex digest — used for duplicate detection */
-    @Column(name = "checksum", nullable = false, length = 64)
-    private String checksum;
+    // /** SHA-256 hex digest — used for duplicate detection */
+    // @Column(name = "checksum", nullable = false, length = 64)
+    // private String checksum;
 
     // ── Media Classification ─────────────────────────────────────────────────
 

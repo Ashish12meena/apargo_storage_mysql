@@ -33,10 +33,11 @@ public class MediaController {
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Upload a media file")
     public ResponseEntity<ApiResponse<MediaUploadResponse>> upload(
-            @RequestParam("file") MultipartFile file) {
+            @RequestParam("file") MultipartFile file,
+        @RequestHeader("X-Waba-Id")String wabaId) {
 
         log.info("Upload request: {}", file.getOriginalFilename());
-        return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", orchestrator.uploadMedia(file)));
+        return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", orchestrator.uploadMedia(file,wabaId)));
     }
 
     @GetMapping

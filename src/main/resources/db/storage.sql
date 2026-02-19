@@ -1,4 +1,3 @@
-
 drop schema if exists apargo_storage_mysql;
 
 create schema apargo_storage_mysql;
@@ -13,20 +12,19 @@ CREATE TABLE media (
     stored_filename     VARCHAR(255)    NOT NULL,
     mime_type           VARCHAR(100)    NOT NULL,
     file_size           BIGINT          NOT NULL,
-    checksum            VARCHAR(64)     NOT NULL,         -- SHA-256 for duplicate detection
 
     -- Media classification
-    media_type          VARCHAR(50)     NOT NULL,         -- IMAGE, VIDEO, DOCUMENT, AUDIO, PRODUCT
+    media_type          VARCHAR(50)     NOT NULL,
 
     -- Storage location
-    storage_provider    VARCHAR(50)     NOT NULL,         -- LOCAL, S3, MINIO, etc.
+    storage_provider    VARCHAR(50)     NOT NULL,
     storage_key         VARCHAR(1000)   NOT NULL,
     storage_bucket      VARCHAR(255),
     storage_region      VARCHAR(100),
     media_url           VARCHAR(2048),
 
     -- WhatsApp / Facebook
-    media_id            VARCHAR(255),                     -- WhatsApp media_id returned after upload
+    media_id            VARCHAR(255),
     waba_id             VARCHAR(255),
 
     -- Tenant context
@@ -34,15 +32,12 @@ CREATE TABLE media (
     project_id          BIGINT          NOT NULL,
 
     -- Lifecycle
-    status              VARCHAR(50)     NOT NULL DEFAULT 'ACTIVE',   -- ACTIVE, DELETED
+    status              VARCHAR(50)     NOT NULL DEFAULT 'ACTIVE',
     created_at          DATETIME(6)     NOT NULL,
     updated_at          DATETIME(6),
     deleted_at          DATETIME(6),
 
     PRIMARY KEY (id),
-
-    -- Duplicate detection: same file in same org+project
-    UNIQUE INDEX idx_media_checksum_org_project (checksum, organisation_id, project_id),
 
     -- Core query patterns
     INDEX idx_media_org_project             (organisation_id, project_id),

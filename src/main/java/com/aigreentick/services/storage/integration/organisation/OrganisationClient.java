@@ -41,7 +41,7 @@ public class OrganisationClient {
 
     @Retry(name = CB, fallbackMethod = "credentialsFallback")
     @CircuitBreaker(name = CB, fallbackMethod = "credentialsFallback")
-    public AccessTokenCredentials getPhoneNumberCredentials(Long orgId) {
+    public AccessTokenCredentials getPhoneNumberCredentials(Long projectId, String wabaId) {
         if (!properties.isOutgoingEnabled()) {
             throw new ExternalServiceException("Outgoing organisation client calls are disabled");
         }

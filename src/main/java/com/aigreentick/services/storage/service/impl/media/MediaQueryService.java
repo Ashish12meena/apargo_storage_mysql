@@ -48,9 +48,9 @@ public class MediaQueryService {
         return mediaRepository.existsByStoredFilename(storedFilename);
     }
 
-    public boolean existsByChecksumAndOrgAndProject(String checksum, Long orgId, Long projectId) {
-        return mediaRepository.existsByChecksumAndOrganisationIdAndProjectId(checksum, orgId, projectId);
-    }
+    // public boolean existsByChecksumAndOrgAndProject(String checksum, Long orgId, Long projectId) {
+    //     return mediaRepository.existsByChecksumAndOrganisationIdAndProjectId(checksum, orgId, projectId);
+    // }
 
     public long countByOrgAndProject(Long orgId, Long projectId) {
         return mediaRepository.countByOrganisationIdAndProjectId(orgId, projectId);

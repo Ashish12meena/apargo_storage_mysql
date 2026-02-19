@@ -21,7 +21,6 @@ import com.aigreentick.services.storage.integration.organisation.dto.AccessToken
 import com.aigreentick.services.storage.integration.organisation.dto.StorageInfo;
 import com.aigreentick.services.storage.mapper.MediaMapper;
 import com.aigreentick.services.storage.service.port.StoragePort;
-import com.aigreentick.services.storage.util.ChecksumUtils;
 import com.aigreentick.services.storage.util.FileUtils;
 import com.aigreentick.services.storage.validator.MediaValidator;
 import lombok.RequiredArgsConstructor;
@@ -54,7 +53,7 @@ public class MediaUploadOrchestrator {
     private final MediaValidator mediaValidator;
 
     @Transactional
-    public MediaUploadResponse uploadMedia(MultipartFile multipart) {
+    public MediaUploadResponse uploadMedia(MultipartFile multipart,String wabaId) {
         if (multipart == null || multipart.isEmpty()) {
             throw new MediaValidationException("Uploaded file is empty or null");
         }
@@ -71,12 +70,12 @@ public class MediaUploadOrchestrator {
 
             String contentType = multipart.getContentType();
             MediaType mediaType = mediaValidator.detectMediaType(contentType);
-            String checksum = ChecksumUtils.sha256(multipart.getInputStream());
+            // String checksum = ChecksumUtils.sha256(multipart.getInputStream());
 
-            // 2. Duplicate check (log only — not blocking yet)
-            if (queryService.existsByChecksumAndOrgAndProject(checksum, orgId, projectId)) {
-                log.info("Duplicate file detected. checksum={} org={} project={}", checksum, orgId, projectId);
-            }
+            // // 2. Duplicate check (log only — not blocking yet)
+            // if (queryService.existsByChecksumAndOrgAndProject(checksum, orgId, projectId)) {
+            //     log.info("Duplicate file detected. checksum={} org={} project={}", checksum, orgId, projectId);
+            // }
 
             // 3. Persist to storage
             StorageMetadata metadata = StorageMetadata.builder()
@@ -95,7 +94,7 @@ public class MediaUploadOrchestrator {
             String whatsappMediaId = null;
             try {
                 tempFile = FileUtils.convertMultipartToFile(multipart);
-                whatsappMediaId = pushToWhatsApp(tempFile, contentType, orgId);
+                whatsappMediaId = pushToWhatsApp(tempFile, contentType, projectId,wabaId);
             } catch (Exception ex) {
                 log.warn("WhatsApp upload skipped: {}", ex.getMessage());
             }
@@ -106,7 +105,8 @@ public class MediaUploadOrchestrator {
                     .storedFilename(storageResult.getStorageKey())
                     .mimeType(contentType)
                     .fileSize(multipart.getSize())
-                    .checksum(checksum)
+                    // .checksum(checksum)
+                    .wabaId(wabaId)
                     .mediaType(mediaType)
                     .storageProvider(storageResult.getProvider())
                     .storageKey(storageResult.getStorageKey())
@@ -173,8 +173,8 @@ public class MediaUploadOrchestrator {
         }
     }
 
-    private String pushToWhatsApp(File file, String contentType, Long orgId) {
-        AccessTokenCredentials creds = organisationClient.getPhoneNumberCredentials(orgId);
+    private String pushToWhatsApp(File file, String contentType, Long projectId, String wabaId) {
+        AccessTokenCredentials creds = organisationClient.getPhoneNumberCredentials(projectId,wabaId);
         FacebookApiResult<WhatsappMediaUploadResponse> result =
                 facebookClient.uploadMedia(file, contentType, creds.getId(), creds.getAccessToken());
 
