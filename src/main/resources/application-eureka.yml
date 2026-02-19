@@ -1,0 +1,27 @@
+#eureka
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8888/eureka/  # Your Eureka server URL
+    register-with-eureka: true
+    fetch-registry: true
+    enabled: false
+
+
+user-service:
+    base-url: http://localhost:7999
+    api-version: v1
+    outgoing-enabled: true
+    connect-timeout: 5000
+    read-timeout: 10000
+
+organisation-service:
+  base-url: http://localhost:7998
+  outgoing-enabled: true
+  connect-timeout: 5000
+  read-timeout: 10000
+
+whatsapp-service:
+  api-version: v23.0
+  base-url: https://graph.facebook.com 
+  outgoing-enabled: true

@@ -1,0 +1,172 @@
+# Storage Service — Overview
+
+## What Is This Service?
+
+The **Storage Service** is a Spring Boot microservice built for **Aigreentick** that handles all media file operations within the platform. It acts as a centralized hub for uploading, storing, retrieving, and managing media files (images, videos, documents, audio), with optional direct integration with **WhatsApp Business API (Facebook Graph API)** for media uploads.
+
+---
+
+## Core Purpose
+
+- Accept media file uploads from clients via REST API
+- Store files either on the **local filesystem** or **Amazon S3** (switchable via config)
+- Optionally push uploaded media to **WhatsApp/Facebook** and store the returned `media_id`
+- Track all media metadata in a **MySQL** database
+- Serve paginated media listings per organization/project
+- Support multi-project architecture where one organization can have multiple projects, each with isolated storage
+
+---
+
+## Key Features
+
+### 1. Dual Storage Provider Support
+- **Local Filesystem** — stores files in a configurable root directory; suitable for development
+- **Amazon S3** — supports both small file (PutObject) and large file (multipart via S3TransferManager) uploads; configurable via `storage.providers.s3.*`
+- Active provider is selected at startup via `storage.active-provider` config (default: `local`)
+
+**File/Folder Structure (Both Local and S3)**
+
+All media is stored using a structured path that includes both `org-id` and `project-id`, enabling easy bulk deletion per project or per organization:
+
+```
+org-{orgId}/proj-{projectId}/{media-type}/{uuid}.{ext}
+
+Example:
+  org-101/proj-55/image/a3f9c2d1-4b2e-4f8a-bf12-9e123abc4567.jpg
+  org-101/proj-55/video/b7e2a1c9-1234-4abc-9def-000011112222.mp4
+  org-101/proj-88/document/c1d2e3f4-aaaa-bbbb-cccc-ddddeeee1111.pdf
+```
+
+This structure means:
+- To delete all media for a **specific project** → delete the path `org-{orgId}/proj-{projectId}/`
+- To delete all media for an **entire organization** → delete the path `org-{orgId}/`
+- One organization can have **multiple project IDs**, each fully isolated in storage
+- Applies to **both** Local Filesystem and Amazon S3 providers
+
+### 2. WhatsApp / Facebook Media Upload
+- After storing a file locally/on S3, the service optionally uploads it to **Facebook Graph API** using the phone number's access token
+- Returns and persists the `media_id` from WhatsApp for future messaging use
+- Also supports **resumable uploads** via Facebook's Upload Session API (initiate → upload chunks → verify offset)
+
+### 3. Media Metadata Persistence
+- Every uploaded file is saved as a `Media` entity in MySQL
+- Tracks: original filename, stored filename/key, MIME type, file size, media type, storage provider, bucket, region, WhatsApp media ID, organization ID, and project ID
+- Supports **soft delete** via `deleted_at` + `status` field
+- `checksum` column (SHA-256) is present in schema but not yet active — reserved for future duplicate detection feature
+
+### 4. Multi-Tenant Context
+- Organization and project context (`X-Org-Id`, `X-Project-Id` headers) is extracted per request via `UserContextInterceptor` and stored in a thread-local `UserContext`
+- All media is scoped to the owning organization and project
+- One organization can have **multiple projects** — each project's media is fully isolated in storage under its own path
+- Outgoing WebClient requests automatically propagate `X-Org-Id` and `X-Project-Id` headers via `UserContextExchangeFilter`
+
+### 5. Storage Quota Enforcement
+- A single API call fetches storage info scoped to **both `orgId` and `projectId` together**
+- Quota is enforced at the **project level within an organization**
+- `OrganisationClientAdapter.getStorageInfo()` accepts both `orgId` and `projectId` and calls a combined quota endpoint
+- Throws `StorageLimitExceedException` if remaining quota is less than the file size being uploaded
+
+### 6. Rate Limiting
+- Per org+project (or per-IP fallback) rate limiting using **Bucket4j** (token bucket algorithm)
+- Configurable limits per endpoint (upload vs. read), applied via `RateLimitInterceptor`
+
+### 7. Resilience (Circuit Breaker + Retry)
+- All external service calls (WhatsApp, Organisation Service) are wrapped with **Resilience4j** circuit breaker, retry, and rate limiter
+- Fallback methods prevent cascading failures
+
+### 8. Redis Caching
+- Media lookups and storage info are cached in **Redis** with configurable TTLs
+- Cache regions: `media` (1 hr), `storageInfo` (5 min), `userMediaList` (10 min)
+
+### 9. Cleanup
+- Media cleanup is triggered explicitly by `organisationId` or `projectId`
+- Deleting a project removes all its media from both storage provider and database
+- Deleting an organisation removes all media across all its projects
+
+### 10. Validation
+- File size, MIME type, and filename are validated before upload
+- Configurable allowed types per media category (image/video/audio/document)
+- Path traversal protection on filenames
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Spring Boot 3.5.6 (Java 21) |
+| Database | MySQL + Spring Data JPA + Flyway |
+| Cache | Redis (Spring Cache) |
+| Cloud Storage | AWS S3 SDK v2 + S3 Transfer Manager |
+| Messaging Integration | WhatsApp Business API (Facebook Graph API) via WebClient |
+| Service Discovery | Netflix Eureka Client |
+| Inter-service Calls | WebClient (WebFlux) |
+| Resilience | Resilience4j (Retry, CircuitBreaker, RateLimiter) |
+| Rate Limiting | Bucket4j |
+| API Documentation | SpringDoc OpenAPI (Swagger UI) |
+| Monitoring | Spring Actuator + Micrometer + Prometheus |
+| Build Tool | Maven |
+
+---
+
+## REST API Summary
+
+Base path: `/api/v1/media`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/upload` | Upload a media file |
+| GET | `/` | Get all media for current org+project (paginated) |
+| GET | `/images` | Get images only |
+| GET | `/videos` | Get videos only |
+| GET | `/documents` | Get documents only |
+| GET | `/audio` | Get audio files only |
+| GET | `/public-url` | Generate a public/pre-signed URL for a storage key |
+
+Swagger UI: `http://localhost:7998/swagger-ui.html`
+
+---
+
+## Configuration Profiles
+
+| Profile | Purpose |
+|---|---|
+| `database` | MySQL datasource config |
+| `redis` | Redis connection and cache settings |
+| `media` | Upload size limits, allowed MIME types, paths |
+| `storage` | Storage provider selection and provider-specific config |
+| `eureka` | Service discovery and external service URLs |
+| `resilience` | Circuit breaker, retry, and rate limiter tuning |
+
+---
+
+## Upload Flow
+
+```
+Client → POST /api/v1/media/upload
+        ↓
+  Extract context: orgId, projectId (from X-Org-Id, X-Project-Id headers)
+        ↓
+  Validate file (size, type, filename)
+        ↓
+  Compute SHA-256 checksum → store in DB (duplicate detection not yet active)
+        ↓
+  Check storage quota for (orgId + projectId) — single combined query
+        ↓
+  Save to Storage Provider (Local / S3)
+  Path: org-{orgId}/proj-{projectId}/{media-type}/{uuid}.{ext}
+        ↓
+  Upload to WhatsApp/Facebook (optional, non-blocking on failure)
+        ↓
+  Persist Media entity to MySQL (orgId + projectId scoped)
+        ↓
+  Return MediaUploadResponse (url, mediaId, metadata)
+```
+
+---
+
+## Running the Service
+
+- Port: `7998`
+- Requires: MySQL, Redis (and optionally Eureka, S3)
+- Start with: `./mvnw spring-boot:run`

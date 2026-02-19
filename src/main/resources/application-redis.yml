@@ -1,0 +1,33 @@
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 60000
+      jedis:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+  cache:
+    type: redis
+    redis:
+      time-to-live: 600000 # 10 minutes
+      cache-null-values: false
+      use-key-prefix: true
+      key-prefix: "storage-service:"
+
+# Cache Configuration
+cache:
+  config:
+    media:
+      ttl: 3600 # 1 hour
+      max-size: 1000
+    storage-info:
+      ttl: 300 # 5 minutes
+      max-size: 100
+    user-media-list:
+      ttl: 600 # 10 minutes
+      max-size: 500

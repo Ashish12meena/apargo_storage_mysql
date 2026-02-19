@@ -1,0 +1,20 @@
+resilience:
+  retry:
+    max-attempts: 3
+    wait-duration-ms: 1000
+   
+         
+  circuit-breaker:
+    sliding-window-size: 20
+    failure-rate-threshold: 50.0
+    slow-call-rate-threshold: 50.0
+    slow-call-duration-threshold-sec: 2
+    wait-duration-in-open-state-sec: 10
+    permitted-calls-in-half-open-state: 5
+    automatic-transition-enabled: true
+    minimum-number-of-calls: 10
+    
+  rate-limiter:
+    limit-for-period: 10
+    limit-refresh-period-sec: 1
+    timeout-duration-ms: 0
