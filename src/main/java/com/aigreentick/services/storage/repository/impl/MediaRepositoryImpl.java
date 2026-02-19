@@ -27,7 +27,7 @@ public class MediaRepositoryImpl implements MediaRepositoryCustom {
         CriteriaUpdate<Media> update = cb.createCriteriaUpdate(Media.class);
         Root<Media> root = update.from(Media.class);
 
-        update.set(root.get("status"), MediaStatus.ACTIVE);   // extend enum with DELETED if needed
+        update.set(root.get("status"), MediaStatus.DELETED);   // extend enum with DELETED if needed
         update.set(root.get("deletedAt"), Instant.now());
         update.set(root.get("updatedAt"), Instant.now());
         update.where(cb.equal(root.get("id"), mediaId));

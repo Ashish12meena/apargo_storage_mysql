@@ -10,7 +10,7 @@ import com.aigreentick.services.storage.dto.storage.StorageMetadata;
 import com.aigreentick.services.storage.dto.storage.StorageResult;
 import com.aigreentick.services.storage.enums.StorageProviderType;
 import com.aigreentick.services.storage.exception.StorageException;
-import com.aigreentick.services.storage.service.StorageProvider;
+import com.aigreentick.services.storage.service.port.StoragePort;
 
 import software.amazon.awssdk.core.async.AsyncRequestBody;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -33,7 +33,7 @@ import java.util.Map;
 @Component
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "storage.providers.s3", name = "enabled", havingValue = "true")
-public class S3StorageAdapter implements StorageProvider {
+public class S3StorageAdapter implements StoragePort {
 
     private final S3Client s3Client;
     private final S3TransferManager transferManager;

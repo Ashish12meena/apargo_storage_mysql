@@ -1,11 +1,11 @@
 # PostgreSQL Configuration
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/services
-    username: postgres
-    password: root
+    url: jdbc:mysql://localhost:3306/apargo_storage_mysql
+    username: root
+    password: meenagaming12@#
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     show-sql: true

@@ -1,3 +1,10 @@
+
+drop schema if exists apargo_storage_mysql;
+
+create schema apargo_storage_mysql;
+
+use apargo_storage_mysql;
+
 CREATE TABLE media (
     id                  BIGINT          NOT NULL AUTO_INCREMENT,
 

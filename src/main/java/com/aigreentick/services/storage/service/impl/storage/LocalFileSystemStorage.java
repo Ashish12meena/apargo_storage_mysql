@@ -11,7 +11,7 @@ import com.aigreentick.services.storage.dto.storage.StorageMetadata;
 import com.aigreentick.services.storage.dto.storage.StorageResult;
 import com.aigreentick.services.storage.enums.StorageProviderType;
 import com.aigreentick.services.storage.exception.StorageException;
-import com.aigreentick.services.storage.service.StorageProvider;
+import com.aigreentick.services.storage.service.port.StoragePort;
 
 import java.io.*;
 import java.nio.file.Files;
@@ -24,7 +24,7 @@ import java.time.Duration;
 @Component
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "storage.providers.local", name = "enabled", havingValue = "true")
-public class LocalFileSystemStorage implements StorageProvider {
+public class LocalFileSystemStorage implements StoragePort {
     
     private final LocalStorageProperties properties;
     
