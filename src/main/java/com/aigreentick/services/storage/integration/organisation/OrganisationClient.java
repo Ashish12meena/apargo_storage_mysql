@@ -33,6 +33,7 @@ public class OrganisationClient {
         return new StorageInfo(52_428_800L, 1_073_741_824L, 1_021_313_024L);
     }
 
+    @SuppressWarnings("unused")
     private StorageInfo storageInfoFallback(Throwable ex) {
         log.error("OrganisationClient fallback triggered: {}", ex.getMessage());
         throw new ExternalServiceException("Organisation Service temporarily unavailable");

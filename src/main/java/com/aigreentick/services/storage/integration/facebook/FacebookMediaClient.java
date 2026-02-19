@@ -157,11 +157,11 @@ public class FacebookMediaClient {
                     .bodyToMono(UploadMediaResponse.class)
                     .block();
 
-            if (resp == null || resp.getFileHandle() == null) {
+            if (resp == null || resp.getFacebookImageUrl() == null) {
                 throw new IllegalStateException("Upload failed — handle not returned");
             }
 
-            log.info("Chunk uploaded. handle={}", resp.getFileHandle());
+            log.info("Chunk uploaded. handle={}", resp.getFacebookImageUrl());
             return FacebookApiResult.success(resp, 200);
 
         } catch (WebClientResponseException ex) {
@@ -195,12 +195,14 @@ public class FacebookMediaClient {
 
     // ── Fallbacks ─────────────────────────────────────────────────────────────
 
+    @SuppressWarnings("unused")
     private FacebookApiResult<WhatsappMediaUploadResponse> uploadMediaFallback(
             File file, String mimeType, String phoneNumberId, String accessToken, Throwable ex) {
         log.warn("Fallback: uploadMedia. phoneNumberId={} cause={}", phoneNumberId, ex.getMessage());
         return FacebookApiResult.error("Media upload failed: " + ex.getMessage(), 503);
     }
 
+    @SuppressWarnings("unused")
     private <T> FacebookApiResult<T> resumableFallback(Object p1, Object p2, Object p3, Object p4, Object p5, Throwable ex) {
         log.warn("Fallback: resumable upload. cause={}", ex.getMessage());
         return FacebookApiResult.error("Upload operation failed: " + ex.getMessage(), 503);
