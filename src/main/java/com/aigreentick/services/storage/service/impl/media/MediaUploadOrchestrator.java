@@ -11,10 +11,10 @@ import com.aigreentick.services.storage.enums.MediaType;
 import com.aigreentick.services.storage.exception.MediaUploadException;
 import com.aigreentick.services.storage.exception.MediaValidationException;
 import com.aigreentick.services.storage.exception.StorageLimitExceededException;
+import com.aigreentick.services.storage.integration.account.WhatsappAccountClient;
+import com.aigreentick.services.storage.integration.account.dto.AccessTokenCredentials;
 import com.aigreentick.services.storage.integration.facebook.FacebookApiResult;
 import com.aigreentick.services.storage.integration.facebook.FacebookMediaClient;
-import com.aigreentick.services.storage.integration.organisation.OrganisationClient;
-import com.aigreentick.services.storage.integration.organisation.dto.AccessTokenCredentials;
 import com.aigreentick.services.storage.mapper.MediaMapper;
 import com.aigreentick.services.storage.integration.facebook.dto.WhatsappMediaUploadResponse;
 import com.aigreentick.services.storage.service.impl.quota.QuotaService;
@@ -50,7 +50,7 @@ public class MediaUploadOrchestrator {
 
     private final StoragePort storagePort;
     private final FacebookMediaClient facebookClient;
-    private final OrganisationClient organisationClient;
+    private final WhatsappAccountClient organisationClient;
     private final MediaCommandService commandService;
     private final MediaQueryService queryService;
     private final MediaMapper mediaMapper;

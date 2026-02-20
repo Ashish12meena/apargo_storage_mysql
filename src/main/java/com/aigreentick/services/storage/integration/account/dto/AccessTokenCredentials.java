@@ -1,4 +1,4 @@
-package com.aigreentick.services.storage.integration.organisation.dto;
+package com.aigreentick.services.storage.integration.account.dto;
 
 
 import lombok.AllArgsConstructor;
