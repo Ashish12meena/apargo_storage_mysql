@@ -13,11 +13,11 @@ import com.aigreentick.services.storage.exception.MediaValidationException;
 import com.aigreentick.services.storage.exception.StorageLimitExceededException;
 import com.aigreentick.services.storage.integration.facebook.FacebookApiResult;
 import com.aigreentick.services.storage.integration.facebook.FacebookMediaClient;
-import com.aigreentick.services.storage.integration.facebook.dto.WhatsappMediaUploadResponse;
 import com.aigreentick.services.storage.integration.organisation.OrganisationClient;
 import com.aigreentick.services.storage.integration.organisation.dto.AccessTokenCredentials;
-import com.aigreentick.services.storage.integration.organisation.dto.StorageInfo;
 import com.aigreentick.services.storage.mapper.MediaMapper;
+import com.aigreentick.services.storage.integration.facebook.dto.WhatsappMediaUploadResponse;
+import com.aigreentick.services.storage.service.impl.quota.QuotaService;
 import com.aigreentick.services.storage.service.port.StoragePort;
 import com.aigreentick.services.storage.util.FileUtils;
 import com.aigreentick.services.storage.validator.MediaValidator;
@@ -38,12 +38,10 @@ import java.time.Instant;
 
 /**
  * Orchestrates the full media upload flow:
- * validate → quota check → convert to temp file → store → upload to WhatsApp → persist.
+ * validate → quota check (local DB) → convert to temp file → store → persist.
  *
- * FIX: MultipartFile InputStream can only be read once. Previously, storagePort.save()
- * consumed the stream, leaving convertMultipartToFile() with an empty/partial file for
- * the WhatsApp upload. Now we convert to a temp file first and derive an independent
- * FileInputStream for storage, while reusing the same File for WhatsApp.
+ * Quota is enforced entirely within the Storage Service using local
+ * org_storage and project_storage tables. No remote service call needed.
  */
 @Slf4j
 @Service
@@ -57,7 +55,18 @@ public class MediaUploadOrchestrator {
     private final MediaQueryService queryService;
     private final MediaMapper mediaMapper;
     private final MediaValidator mediaValidator;
+    private final QuotaService quotaService;
 
+    /**
+     * Full upload flow inside a single transaction:
+     * 1. Validate file
+     * 2. Reserve quota (locks project row then org row, checks capacity, increments used_bytes)
+     * 3. Save to storage provider
+     * 4. Insert Media entity
+     * 5. Commit — quota + media row committed atomically
+     *
+     * On any failure the transaction rolls back, releasing the reserved quota automatically.
+     */
     @Transactional
     public MediaUploadResponse uploadMedia(MultipartFile multipart, String wabaId) {
         if (multipart == null || multipart.isEmpty()) {
@@ -71,15 +80,15 @@ public class MediaUploadOrchestrator {
 
         File tempFile = null;
         try {
-            // 1. Quota check
-            enforceStorageQuota(multipart.getSize(),orgId,projectId);
+            // 1. Reserve quota — this acquires pessimistic locks and increments counters.
+            //    If quota is exceeded, StorageLimitExceededException is thrown and
+            //    the transaction rolls back (counters are never committed).
+            quotaService.reserveQuota(orgId, projectId, multipart.getSize());
 
             String contentType = multipart.getContentType();
             MediaType mediaType = mediaValidator.detectMediaType(contentType);
 
-            // 2. Convert MultipartFile to temp file ONCE.
-            //    This is the single read of the underlying servlet stream.
-            //    Both storagePort and WhatsApp upload will reuse this file.
+            // 2. Convert MultipartFile to temp file ONCE
             tempFile = FileUtils.convertMultipartToFile(multipart);
 
             StorageMetadata metadata = StorageMetadata.builder()
@@ -92,12 +101,10 @@ public class MediaUploadOrchestrator {
                     .fileExtension(extractExtension(multipart.getOriginalFilename()))
                     .build();
 
-            // 3. Persist to storage provider using a fresh FileInputStream.
-            //    This stream is fully independent of the original multipart stream.
+            // 3. Persist to storage provider
             StorageResult storageResult = saveToStorage(tempFile, metadata);
 
-            // 4. Upload to WhatsApp using the same temp File object (not a stream).
-            //    Best-effort — failure is logged and does not block the response.
+            // 4. (Optional) Upload to WhatsApp — best-effort, does not block
             // String whatsappMediaId = null;
             // try {
             //     whatsappMediaId = pushToWhatsApp(tempFile, contentType, projectId, wabaId);
@@ -106,7 +113,7 @@ public class MediaUploadOrchestrator {
             //             multipart.getOriginalFilename(), ex.getMessage());
             // }
 
-            // 5. Persist Media entity
+            // 5. Insert Media entity (same transaction as quota reservation)
             Instant now = Instant.now();
             Media media = Media.builder()
                     .originalFilename(multipart.getOriginalFilename())
@@ -129,9 +136,8 @@ public class MediaUploadOrchestrator {
 
             commandService.save(media);
 
-            // log.info("Upload complete. key={} provider={} org={} project={} wabaMediaId={}",
-            //         storageResult.getStorageKey(), storageResult.getProvider(),
-            //         orgId, projectId, whatsappMediaId);
+            log.info("Upload complete. key={} provider={} org={} project={}",
+                    storageResult.getStorageKey(), storageResult.getProvider(), orgId, projectId);
 
             return MediaUploadResponse.builder()
                     .url(storageResult.getPublicUrl())
@@ -145,12 +151,11 @@ public class MediaUploadOrchestrator {
                     .build();
 
         } catch (MediaValidationException | StorageLimitExceededException ex) {
-            throw ex; // let GlobalExceptionHandler handle known errors
+            throw ex;
         } catch (Exception ex) {
             log.error("Media upload failed for file='{}'", multipart.getOriginalFilename(), ex);
             throw new MediaUploadException("Media upload failed: " + ex.getMessage(), ex);
         } finally {
-            // Always clean up the temp file regardless of success or failure
             FileUtils.deleteQuietly(tempFile);
         }
     }
@@ -175,10 +180,6 @@ public class MediaUploadOrchestrator {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /**
-     * Opens a fresh FileInputStream from the temp file and delegates to the storage port.
-     * The stream is closed in a try-with-resources regardless of outcome.
-     */
     private StorageResult saveToStorage(File tempFile, StorageMetadata metadata) {
         try (InputStream is = new FileInputStream(tempFile)) {
             return storagePort.save(is, metadata);
@@ -188,10 +189,6 @@ public class MediaUploadOrchestrator {
         }
     }
 
-    /**
-     * Fetches phone-number credentials and uploads the file to WhatsApp.
-     * Uses the File object directly — no stream involved here.
-     */
     private String pushToWhatsApp(File file, String contentType, Long projectId, String wabaId) {
         AccessTokenCredentials creds = organisationClient.getPhoneNumberCredentials(projectId, wabaId);
         FacebookApiResult<WhatsappMediaUploadResponse> result =
@@ -201,15 +198,6 @@ public class MediaUploadOrchestrator {
             throw new MediaUploadException(result.getErrorMessage(), result.getStatusCode());
         }
         return result.getData().getId();
-    }
-
-    private void enforceStorageQuota(long fileSize,Long orgId, Long projectId) {
-        StorageInfo info = organisationClient.getStorageInfo(orgId,projectId);
-        if (info.getRemaining() < fileSize) {
-            throw new StorageLimitExceededException(
-                    String.format("Storage quota exceeded. Available: %d bytes, required: %d bytes",
-                            info.getRemaining(), fileSize));
-        }
     }
 
     private Long requireOrgId() {
