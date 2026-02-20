@@ -7,7 +7,6 @@ spring:
       - media
       - eureka
       - redis
-      - storage
   application:
     name: storage-service
   servlet:
