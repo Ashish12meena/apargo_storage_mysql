@@ -105,13 +105,13 @@ public class MediaUploadOrchestrator {
             StorageResult storageResult = saveToStorage(tempFile, metadata);
 
             // 4. (Optional) Upload to WhatsApp — best-effort, does not block
-            // String whatsappMediaId = null;
-            // try {
-            //     whatsappMediaId = pushToWhatsApp(tempFile, contentType, projectId, wabaId);
-            // } catch (Exception ex) {
-            //     log.warn("WhatsApp upload skipped for file='{}': {}",
-            //             multipart.getOriginalFilename(), ex.getMessage());
-            // }
+            String whatsappMediaId = null;
+            try {
+                whatsappMediaId = pushToWhatsApp(tempFile, contentType, projectId, wabaId);
+            } catch (Exception ex) {
+                log.warn("WhatsApp upload skipped for file='{}': {}",
+                        multipart.getOriginalFilename(), ex.getMessage());
+            }
 
             // 5. Insert Media entity (same transaction as quota reservation)
             Instant now = Instant.now();
@@ -127,7 +127,7 @@ public class MediaUploadOrchestrator {
                     .storageBucket(storageResult.getBucket())
                     .storageRegion(storageResult.getRegion())
                     .mediaUrl(storageResult.getPublicUrl())
-                    // .mediaId(whatsappMediaId)
+                    .mediaId(whatsappMediaId)
                     .organisationId(orgId)
                     .projectId(projectId)
                     .status(MediaStatus.ACTIVE)
@@ -145,7 +145,7 @@ public class MediaUploadOrchestrator {
                     .storedFilename(storageResult.getStorageKey())
                     .mediaType(mediaType)
                     .contentType(contentType)
-                    // .mediaId(whatsappMediaId)
+                    .mediaId(whatsappMediaId)
                     .fileSizeBytes(multipart.getSize())
                     .uploadedAt(now)
                     .build();

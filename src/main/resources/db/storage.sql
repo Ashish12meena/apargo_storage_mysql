@@ -97,3 +97,22 @@ CREATE TABLE project_storage (
     INDEX idx_project_storage_project_id (project_id)
 
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- V3__seed_quota_data.sql
+-- Seed quota data for development/testing.
+-- Adjust org_id and project_id to match your X-Org-Id / X-Project-Id headers.
+
+-- ── Org-level quotas ────────────────────────────────────────────────────────
+-- 1 GB per org
+INSERT INTO org_storage (org_id, max_bytes, used_bytes) VALUES
+    (1, 1073741824, 0),   -- Org 1: 1 GB limit
+    (2, 2147483648, 0);   -- Org 2: 2 GB limit
+
+-- ── Project-level quotas ────────────────────────────────────────────────────
+-- Each project gets a portion of the org's total
+INSERT INTO project_storage (org_id, project_id, max_bytes, used_bytes) VALUES
+    (1, 1, 524288000, 0),    -- Org1, Project1: 500 MB
+    (1, 2, 524288000, 0),    -- Org1, Project2: 500 MB
+    (2, 3, 1073741824, 0),   -- Org2, Project3: 1 GB
+    (2, 4, 1073741824, 0);   -- Org2, Project4: 1 GB

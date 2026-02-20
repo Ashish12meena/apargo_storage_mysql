@@ -10,10 +10,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-/**
- * Adapter for the Organisation Service.
- * Stub implementations return hardcoded values until Feign client is wired.
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -23,24 +19,28 @@ public class OrganisationClient {
 
     private final OrganisationClientProperties properties;
 
+    // ── Storage Info ────────────────────────────────────────────────────────
+
     @Retry(name = CB, fallbackMethod = "storageInfoFallback")
     @CircuitBreaker(name = CB, fallbackMethod = "storageInfoFallback")
     public StorageInfo getStorageInfo(Long orgId, Long projectId) {
         if (!properties.isOutgoingEnabled()) {
             throw new ExternalServiceException("Outgoing organisation client calls are disabled");
         }
-    
         return new StorageInfo(52_428_800L, 1_073_741_824L, 1_021_313_024L);
     }
 
+    // Fallback must match: (Long orgId, Long projectId, Throwable ex)
     @SuppressWarnings("unused")
-    private StorageInfo storageInfoFallback(Throwable ex) {
-        log.error("OrganisationClient fallback triggered: {}", ex.getMessage());
+    private StorageInfo storageInfoFallback(Long orgId, Long projectId, Throwable ex) {
+        log.error("OrganisationClient storageInfo fallback: {}", ex.getMessage());
         throw new ExternalServiceException("Organisation Service temporarily unavailable");
     }
 
-    @Retry(name = CB, fallbackMethod = "credentialsFallback")
-    @CircuitBreaker(name = CB, fallbackMethod = "credentialsFallback")
+    // ── Phone Number Credentials ────────────────────────────────────────────
+
+    @Retry(name = CB, fallbackMethod = "phoneCredentialsFallback")
+    @CircuitBreaker(name = CB, fallbackMethod = "phoneCredentialsFallback")
     public AccessTokenCredentials getPhoneNumberCredentials(Long projectId, String wabaId) {
         if (!properties.isOutgoingEnabled()) {
             throw new ExternalServiceException("Outgoing organisation client calls are disabled");
@@ -51,8 +51,18 @@ public class OrganisationClient {
                 "EAAOcfziRygMBPGSZCjTEADbcIXleBDVHuZAF61EDXn6qw2GuS6ghjiVHESlosKbAFGEAGMkArSBqyyyaqUxS51dSiLFtZBRd0oEZAY1LiNElHPcM3bsRzqNjaQZAXht6WOKuEWEGfotJASpCGqMOKBrXUMQr03TopqfrZCBe4xrmlfwVipb6dYQaVkmn8gCqzN");
     }
 
-    @Retry(name = CB, fallbackMethod = "credentialsFallback")
-    @CircuitBreaker(name = CB, fallbackMethod = "credentialsFallback")
+    // Fallback must match: (Long projectId, String wabaId, Throwable ex)
+    @SuppressWarnings("unused")
+    private AccessTokenCredentials phoneCredentialsFallback(Long projectId, String wabaId, Throwable ex) {
+        log.error("OrganisationClient phoneCredentials fallback: projectId={} wabaId={} cause={}",
+                projectId, wabaId, ex.getMessage());
+        throw new ExternalServiceException("Organisation Service temporarily unavailable");
+    }
+
+    // ── WABA Credentials ────────────────────────────────────────────────────
+
+    @Retry(name = CB, fallbackMethod = "wabaCredentialsFallback")
+    @CircuitBreaker(name = CB, fallbackMethod = "wabaCredentialsFallback")
     public AccessTokenCredentials getWabaCredentials(Long orgId) {
         if (!properties.isOutgoingEnabled()) {
             throw new ExternalServiceException("Outgoing organisation client calls are disabled");
@@ -63,8 +73,10 @@ public class OrganisationClient {
                 "EAAOcfziRygMB...");
     }
 
-    private AccessTokenCredentials credentialsFallback(Long orgId, Throwable ex) {
-        log.error("OrganisationClient credential fallback. orgId={} cause={}", orgId, ex.getMessage());
+    // Fallback must match: (Long orgId, Throwable ex)
+    @SuppressWarnings("unused")
+    private AccessTokenCredentials wabaCredentialsFallback(Long orgId, Throwable ex) {
+        log.error("OrganisationClient wabaCredentials fallback: orgId={} cause={}", orgId, ex.getMessage());
         throw new ExternalServiceException("Organisation Service temporarily unavailable");
     }
 }

@@ -7,6 +7,9 @@ spring:
       - media
       - eureka
       - redis
+  web:
+    resources:
+      add-mappings: false
   application:
     name: storage-service
   servlet:
@@ -179,3 +182,6 @@ quota:
   reconciliation:
     enabled: true
     cron: "0 0 3 * * ?"
+web:
+    resources:
+      add-mappings: false
