@@ -25,7 +25,7 @@ public class OrganisationClient {
 
     @Retry(name = CB, fallbackMethod = "storageInfoFallback")
     @CircuitBreaker(name = CB, fallbackMethod = "storageInfoFallback")
-    public StorageInfo getStorageInfo() {
+    public StorageInfo getStorageInfo(Long orgId, Long projectId) {
         if (!properties.isOutgoingEnabled()) {
             throw new ExternalServiceException("Outgoing organisation client calls are disabled");
         }
@@ -47,8 +47,8 @@ public class OrganisationClient {
         }
         // TODO: replace with actual call
         return new AccessTokenCredentials(
-                "669015486305605",
-                "EAAOcfziRygMB...");
+                "730591696796813",
+                "EAAOcfziRygMBPGSZCjTEADbcIXleBDVHuZAF61EDXn6qw2GuS6ghjiVHESlosKbAFGEAGMkArSBqyyyaqUxS51dSiLFtZBRd0oEZAY1LiNElHPcM3bsRzqNjaQZAXht6WOKuEWEGfotJASpCGqMOKBrXUMQr03TopqfrZCBe4xrmlfwVipb6dYQaVkmn8gCqzN");
     }
 
     @Retry(name = CB, fallbackMethod = "credentialsFallback")

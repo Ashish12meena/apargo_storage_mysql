@@ -72,7 +72,7 @@ public class MediaUploadOrchestrator {
         File tempFile = null;
         try {
             // 1. Quota check
-            enforceStorageQuota(multipart.getSize());
+            enforceStorageQuota(multipart.getSize(),orgId,projectId);
 
             String contentType = multipart.getContentType();
             MediaType mediaType = mediaValidator.detectMediaType(contentType);
@@ -203,8 +203,8 @@ public class MediaUploadOrchestrator {
         return result.getData().getId();
     }
 
-    private void enforceStorageQuota(long fileSize) {
-        StorageInfo info = organisationClient.getStorageInfo();
+    private void enforceStorageQuota(long fileSize,Long orgId, Long projectId) {
+        StorageInfo info = organisationClient.getStorageInfo(orgId,projectId);
         if (info.getRemaining() < fileSize) {
             throw new StorageLimitExceededException(
                     String.format("Storage quota exceeded. Available: %d bytes, required: %d bytes",
