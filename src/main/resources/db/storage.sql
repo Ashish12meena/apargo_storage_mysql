@@ -51,3 +51,49 @@ CREATE TABLE media (
     INDEX idx_media_status          (status)
 
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+-- ============================================================================
+-- Organisation-level storage quota
+-- One row per organisation. Tracks total limit and aggregate usage.
+-- ============================================================================
+CREATE TABLE org_storage (
+    org_id          BIGINT          NOT NULL,
+    max_bytes       BIGINT          NOT NULL DEFAULT 0,
+    used_bytes      BIGINT          NOT NULL DEFAULT 0,
+    created_at      DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at      DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+
+    PRIMARY KEY (org_id),
+
+    CONSTRAINT chk_org_used_non_negative CHECK (used_bytes >= 0),
+    CONSTRAINT chk_org_max_non_negative  CHECK (max_bytes  >= 0)
+
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
+-- Project-level storage quota
+-- One row per (org, project). Tracks per-project limit and usage.
+-- ============================================================================
+CREATE TABLE project_storage (
+    org_id          BIGINT          NOT NULL,
+    project_id      BIGINT          NOT NULL,
+    max_bytes       BIGINT          NOT NULL DEFAULT 0,
+    used_bytes      BIGINT          NOT NULL DEFAULT 0,
+    created_at      DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at      DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+
+    PRIMARY KEY (org_id, project_id),
+
+    CONSTRAINT fk_project_storage_org
+        FOREIGN KEY (org_id) REFERENCES org_storage (org_id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT chk_proj_used_non_negative CHECK (used_bytes >= 0),
+    CONSTRAINT chk_proj_max_non_negative  CHECK (max_bytes  >= 0),
+
+    INDEX idx_project_storage_project_id (project_id)
+
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

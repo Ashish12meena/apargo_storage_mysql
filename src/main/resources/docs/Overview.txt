@@ -12,6 +12,7 @@ The **Storage Service** is a Spring Boot microservice built for **Aigreentick** 
 - Store files either on the **local filesystem** or **Amazon S3** (switchable via config)
 - Optionally push uploaded media to **WhatsApp/Facebook** and store the returned `media_id`
 - Track all media metadata in a **MySQL** database
+- Enforce storage quotas at both **organisation** and **project** levels using local quota tables
 - Serve paginated media listings per organization/project
 - Support multi-project architecture where one organization can have multiple projects, each with isolated storage
 
@@ -52,7 +53,6 @@ This structure means:
 - Every uploaded file is saved as a `Media` entity in MySQL
 - Tracks: original filename, stored filename/key, MIME type, file size, media type, storage provider, bucket, region, WhatsApp media ID, organization ID, and project ID
 - Supports **soft delete** via `deleted_at` + `status` field
-- `checksum` column (SHA-256) is present in schema but not yet active — reserved for future duplicate detection feature
 
 ### 4. Multi-Tenant Context
 - Organization and project context (`X-Org-Id`, `X-Project-Id` headers) is extracted per request via `UserContextInterceptor` and stored in a thread-local `UserContext`
@@ -60,11 +60,77 @@ This structure means:
 - One organization can have **multiple projects** — each project's media is fully isolated in storage under its own path
 - Outgoing WebClient requests automatically propagate `X-Org-Id` and `X-Project-Id` headers via `UserContextExchangeFilter`
 
-### 5. Storage Quota Enforcement
-- A single API call fetches storage info scoped to **both `orgId` and `projectId` together**
-- Quota is enforced at the **project level within an organization**
-- `OrganisationClientAdapter.getStorageInfo()` accepts both `orgId` and `projectId` and calls a combined quota endpoint
-- Throws `StorageLimitExceedException` if remaining quota is less than the file size being uploaded
+### 5. Storage Quota Enforcement (Local Quota Tables)
+
+Storage quotas are enforced **entirely within the Storage Service** using two local MySQL tables — no external service call is required during the upload path.
+
+#### Two-Level Quota Model
+
+**Organisation Level (`org_storage` table)**
+- One row per organisation
+- Tracks `max_bytes` (total limit for the org) and `used_bytes` (aggregate usage across all projects)
+- `org_id` is the primary key
+
+**Project Level (`project_storage` table)**
+- One row per (org, project) combination
+- Tracks `max_bytes` (project-specific limit) and `used_bytes` (usage for this project only)
+- Composite primary key: `(org_id, project_id)`
+- Foreign key to `org_storage` — ensures org quota row exists before any project quota can be created
+
+#### How Quota is Provisioned
+
+The **Organisation Service** calls an internal API on the Storage Service to set or update limits:
+- `PUT /internal/quota/org` — Create or update org-level limit (called when organisation is created or plan changes)
+- `PUT /internal/quota/project` — Create or update project-level limit (called when a new project is created or project limit changes)
+
+These are **idempotent upserts**. The Organisation Service sets the limits; the Storage Service owns and enforces them after that. This is a rare admin-level operation, not on the upload hot path.
+
+#### How Quota is Enforced on Upload
+
+Both org-level and project-level limits are checked and updated **within a single database transaction** alongside the media insert:
+
+1. `SELECT FOR UPDATE` on `project_storage` row for (org_id, project_id)
+2. Check `project.used_bytes + file_size <= project.max_bytes` — reject if project is full
+3. `SELECT FOR UPDATE` on `org_storage` row for (org_id)
+4. Check `org.used_bytes + file_size <= org.max_bytes` — reject if org is full
+5. Store file to provider, insert media row
+6. Increment `project_storage.used_bytes += file_size`
+7. Increment `org_storage.used_bytes += file_size`
+8. Commit transaction
+
+If anything fails, everything rolls back — media row, usage counters, all consistent.
+
+Lock ordering is always **project first, then org** to prevent deadlocks. Concurrent uploads to different projects under the same org only briefly contend at the org row.
+
+#### On Delete
+
+Same logic reversed within one transaction:
+- Decrement `project_storage.used_bytes` and `org_storage.used_bytes` by the file size
+- Delete/soft-delete the media row
+
+#### Reconciliation
+
+A **nightly scheduled job** corrects any drift:
+1. For each project: compare `project_storage.used_bytes` against `SELECT SUM(file_size) FROM media WHERE org_id=? AND project_id=? AND status='ACTIVE'`
+2. For each org: compare `org_storage.used_bytes` against `SELECT SUM(used_bytes) FROM project_storage WHERE org_id=?`
+
+This ensures org-level usage is always derivable from project-level usage, and project-level usage is always derivable from actual media rows.
+
+#### Edge Cases
+- If upload request arrives but no quota row exists for that org+project → reject with "quota not provisioned"
+- CHECK constraints at DB level prevent `used_bytes` from ever going negative
+- CASCADE on FK ensures deleting an org quota automatically cleans up all project quotas
+
+#### Why This Approach (Design Rationale)
+
+| Alternative Considered | Why Rejected |
+|---|---|
+| Call Organisation Service on every upload to check quota | Adds network dependency to hot path; if Organisation Service is down, uploads fail |
+| Call Organisation Service after upload to update usage | Distributed write on every upload; callback failure causes quota drift |
+| Calculate SUM(file_size) from media table on every upload | Expensive at scale with high volume; scanning millions of rows per upload |
+| Running counter + cached remote limit | Still requires remote call for limit; cache staleness risk |
+
+The local quota table approach eliminates all remote calls from the upload path, keeps consistency within a single DB transaction, handles high volume gracefully, and self-heals via nightly reconciliation.
 
 ### 6. Rate Limiting
 - Per org+project (or per-IP fallback) rate limiting using **Bucket4j** (token bucket algorithm)
@@ -80,13 +146,23 @@ This structure means:
 
 ### 9. Cleanup
 - Media cleanup is triggered explicitly by `organisationId` or `projectId`
-- Deleting a project removes all its media from both storage provider and database
-- Deleting an organisation removes all media across all its projects
+- Deleting a project removes all its media from both storage provider and database, and decrements the corresponding quota counters
+- Deleting an organisation removes all media across all its projects and cascades quota deletion via FK
 
 ### 10. Validation
 - File size, MIME type, and filename are validated before upload
 - Configurable allowed types per media category (image/video/audio/document)
 - Path traversal protection on filenames
+
+---
+
+## Database Tables
+
+| Table | Purpose |
+|---|---|
+| `media` | Stores metadata for every uploaded media file |
+| `org_storage` | Organisation-level storage limit and aggregate usage |
+| `project_storage` | Project-level storage limit and usage (FK to org_storage) |
 
 ---
 
@@ -123,6 +199,13 @@ Base path: `/api/v1/media`
 | GET | `/audio` | Get audio files only |
 | GET | `/public-url` | Generate a public/pre-signed URL for a storage key |
 
+Internal API (called by Organisation Service):
+
+| Method | Endpoint | Description |
+|---|---|---|
+| PUT | `/internal/quota/org` | Create or update org-level storage limit |
+| PUT | `/internal/quota/project` | Create or update project-level storage limit |
+
 Swagger UI: `http://localhost:7998/swagger-ui.html`
 
 ---
@@ -149,16 +232,25 @@ Client → POST /api/v1/media/upload
         ↓
   Validate file (size, type, filename)
         ↓
-  Compute SHA-256 checksum → store in DB (duplicate detection not yet active)
+  BEGIN TRANSACTION
         ↓
-  Check storage quota for (orgId + projectId) — single combined query
+  Lock project_storage row (SELECT FOR UPDATE)
+  Check project quota: used_bytes + file_size <= max_bytes
+        ↓
+  Lock org_storage row (SELECT FOR UPDATE)
+  Check org quota: used_bytes + file_size <= max_bytes
         ↓
   Save to Storage Provider (Local / S3)
   Path: org-{orgId}/proj-{projectId}/{media-type}/{uuid}.{ext}
         ↓
   Upload to WhatsApp/Facebook (optional, non-blocking on failure)
         ↓
-  Persist Media entity to MySQL (orgId + projectId scoped)
+  Insert Media entity to MySQL
+        ↓
+  Increment project_storage.used_bytes += file_size
+  Increment org_storage.used_bytes += file_size
+        ↓
+  COMMIT TRANSACTION
         ↓
   Return MediaUploadResponse (url, mediaId, metadata)
 ```
@@ -169,4 +261,5 @@ Client → POST /api/v1/media/upload
 
 - Port: `7998`
 - Requires: MySQL, Redis (and optionally Eureka, S3)
+- Quota must be provisioned via internal API before uploads will succeed
 - Start with: `./mvnw spring-boot:run`
