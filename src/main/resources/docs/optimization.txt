@@ -1,0 +1,437 @@
+# Storage Service — High Concurrency Optimization Solution
+
+## Objective
+
+Enable 30 concurrent uploads for same org/project to complete within 2-3 seconds.
+
+**Current:** ~30 seconds (sequential due to pessimistic locking)
+**Target:** ~2-3 seconds (parallel processing)
+
+---
+
+## Recommended Approach
+
+### What We Will Do
+
+| # | Optimization | Why |
+|---|--------------|-----|
+| 1 | Optimistic Locking for Quota | Eliminates blocking — biggest performance gain |
+| 2 | Async File I/O with Explicit Context | Parallel file writes without ThreadLocal issues |
+| 3 | Increase Connection Pool | Support concurrent DB operations |
+| 4 | Fix Rate Limiter for Concurrency | Proper token consumption for batch scenarios |
+
+### What We Will NOT Do
+
+| Optimization | Why Skip |
+|--------------|----------|
+| Async WhatsApp Upload | Breaks API contract — `mediaId` expected in response |
+| Batch Upload Endpoint | Not needed if single uploads are fast enough |
+| Bulk Quota Reservation | Complexity not justified — partial failure handling is messy |
+| Separate Transactions | Saga-like complexity not worth marginal gain |
+| Quota Caching | Benefit too small, staleness risk |
+| NIO for Local Storage | Negligible improvement for typical file sizes |
+
+---
+
+## Trade-offs We Accept
+
+### 1. Temporary Quota Over-Commit
+
+**Scenario:** 30 requests read quota simultaneously, all see "20MB available", all upload 5MB each = 150MB used when max was 100MB.
+
+**Why acceptable:**
+- Storage quota is soft limit, not billing-critical
+- Nightly reconciliation corrects drift
+- Alternative (pessimistic lock) defeats the purpose of optimization
+
+**Safeguard:** Add 10% buffer to displayed quota limits if strict enforcement needed.
+
+### 2. Retry Overhead Under Extreme Load
+
+**Scenario:** 100+ simultaneous uploads cause retry storms due to optimistic lock conflicts.
+
+**Why acceptable:**
+- 30 concurrent is our target, not 100+
+- Exponential backoff with jitter prevents cascade
+- Max 5 retries then fail fast
+
+**Safeguard:** Monitor retry metrics, alert if retry rate exceeds threshold.
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            HTTP Request                                      │
+│                    Headers: X-Org-Id, X-Project-Id                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        UserContextInterceptor                                │
+│                  Extract orgId, projectId → ThreadLocal                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           MediaController                                    │
+│                                                                              │
+│   1. Extract context: orgId = UserContext.getOrganisationId()               │
+│                        projectId = UserContext.getProjectId()                │
+│   2. Call service with EXPLICIT parameters (not ThreadLocal)                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     ConcurrentMediaUploadService                             │
+│                                                                              │
+│   @Async("mediaUploadExecutor")  ← Runs on separate thread pool             │
+│                                                                              │
+│   Parameters: (MultipartFile, wabaId, orgId, projectId)                     │
+│               ↑ Context passed explicitly, NOT from ThreadLocal              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    │               │               │
+                    ▼               ▼               ▼
+            ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+            │   Quota     │ │   File      │ │   Media     │
+            │  Service    │ │  Storage    │ │   Entity    │
+            │             │ │             │ │   Insert    │
+            │ Optimistic  │ │  Parallel   │ │             │
+            │  Locking    │ │   I/O       │ │             │
+            │ + Retry     │ │             │ │             │
+            └─────────────┘ └─────────────┘ └─────────────┘
+```
+
+---
+
+## Implementation Details
+
+### 1. Database Migration
+
+```sql
+-- V4__add_optimistic_locking.sql
+
+ALTER TABLE org_storage ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE project_storage ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
+```
+
+---
+
+### 2. Entity Changes
+
+**OrgStorage.java** — Add `@Version`
+```java
+@Version
+@Column(name = "version")
+private Long version;
+```
+
+**ProjectStorage.java** — Add `@Version`
+```java
+@Version
+@Column(name = "version")
+private Long version;
+```
+
+---
+
+### 3. Configuration Changes
+
+**application.yml**
+```yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+      connection-timeout: 30000
+
+# Rate limiting - allow 50 uploads per minute per org+project
+rate-limiting:
+  endpoints:
+    upload:
+      capacity: 50
+      refill-tokens: 50
+      refill-duration: 1m
+```
+
+**Add to pom.xml**
+```xml
+<dependency>
+    <groupId>org.springframework.retry</groupId>
+    <artifactId>spring-retry</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework</groupId>
+    <artifactId>spring-aspects</artifactId>
+</dependency>
+```
+
+---
+
+### 4. Enable Retry
+
+**StorageApplication.java**
+```java
+@SpringBootApplication
+@EnableRetry
+public class StorageApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(StorageApplication.class, args);
+    }
+}
+```
+
+---
+
+### 5. New Classes to Create
+
+#### AsyncConfig.java
+```
+Location: config/AsyncConfig.java
+Purpose: Thread pool for parallel uploads
+Key settings:
+  - corePoolSize: 10
+  - maxPoolSize: 30
+  - queueCapacity: 100
+  - threadNamePrefix: "media-upload-"
+```
+
+#### OptimisticQuotaService.java
+```
+Location: service/impl/quota/OptimisticQuotaService.java
+Purpose: Quota reservation with optimistic locking
+Key features:
+  - @Retryable for ObjectOptimisticLockingFailureException
+  - maxAttempts: 5
+  - backoff: 50ms with multiplier 2 and jitter
+  - @Transactional(propagation = REQUIRES_NEW)
+```
+
+#### ConcurrentMediaUploadService.java
+```
+Location: service/impl/media/ConcurrentMediaUploadService.java
+Purpose: Async upload orchestration
+Key features:
+  - @Async("mediaUploadExecutor")
+  - Receives orgId, projectId as METHOD PARAMETERS (not ThreadLocal)
+  - Returns CompletableFuture<MediaUploadResponse>
+  - Handles quota rollback on failure
+```
+
+---
+
+### 6. Controller Change
+
+**MediaController.java** — Extract context at controller level
+```java
+@PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+public ResponseEntity<ApiResponse<MediaUploadResponse>> upload(
+        @RequestParam("file") MultipartFile file,
+        @RequestHeader("X-Waba-Id") String wabaId) {
+
+    // Extract context HERE — still on HTTP thread, ThreadLocal works
+    Long orgId = UserContext.getOrganisationId();
+    Long projectId = UserContext.getProjectId();
+    
+    validator.validateUserContext();  // Validate before async
+    
+    // Pass explicitly to async service
+    MediaUploadResponse response = concurrentUploadService
+            .uploadMediaSync(file, wabaId, orgId, projectId);
+    
+    return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", response));
+}
+```
+
+---
+
+### 7. Key Design Decisions
+
+#### Why Pass Context Explicitly (Not TaskDecorator)?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| TaskDecorator | Automatic propagation, less code change | Magic behavior, easy to forget it's happening, harder to debug |
+| Explicit Parameters | Clear data flow, obvious dependencies, testable | More parameters in method signatures |
+
+**Decision:** Explicit parameters — clarity over magic.
+
+#### Why Keep WhatsApp Upload Synchronous?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Async | Faster response | `mediaId` is null, breaks downstream services, needs polling endpoint |
+| Sync | `mediaId` in response, no API change | Adds 1-2 seconds latency |
+
+**Decision:** Keep synchronous — API stability more important than 1-2 second gain.
+
+#### Why Not Use Batch Endpoint?
+
+If single uploads complete in ~100ms each, 30 parallel uploads = ~2-3 seconds total.
+Batch endpoint adds complexity (partial failure handling, rate limit changes) for marginal benefit.
+
+**Decision:** Skip for now — revisit if single upload optimization is insufficient.
+
+---
+
+## Request Flow After Optimization
+
+```
+30 Concurrent Requests Arrive
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Rate Limiter: 30 tokens consumed (50 capacity) ✓                │
+└──────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  30 Requests → 30 Async Threads (mediaUploadExecutor)            │
+│                                                                   │
+│  Each thread receives: (file, wabaId, orgId, projectId)          │
+└──────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Quota Reservation (Optimistic Locking)                          │
+│                                                                   │
+│  All 30 read quota: used=0, max=500MB → all see capacity ✓       │
+│  All 30 try to write: optimistic conflict → retry with backoff   │
+│  After retries: all 30 succeed (total ~200ms with jitter)        │
+└──────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  File Storage (Parallel I/O)                                     │
+│                                                                   │
+│  30 files written simultaneously to disk/S3                      │
+│  Total time: ~1-2 seconds (I/O bound, not sequential)            │
+└──────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  WhatsApp Upload (Per Request, Synchronous)                      │
+│                                                                   │
+│  30 parallel calls to Facebook API                               │
+│  Total time: ~1-2 seconds (network bound, not sequential)        │
+└──────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Media Entity Insert (30 Parallel Inserts)                       │
+│                                                                   │
+│  Connection pool (30 connections) handles all simultaneously     │
+│  Total time: ~100-200ms                                          │
+└──────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  30 Responses Returned                                           │
+│                                                                   │
+│  Total time: ~2-3 seconds (parallel execution)                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Monitoring & Alerts
+
+### Metrics to Track
+
+| Metric | Alert Threshold | Action |
+|--------|-----------------|--------|
+| `optimistic.lock.retry.count` | > 10 retries/min | Check for unusual load spike |
+| `quota.overcommit.bytes` | > 20% of limit | Review reconciliation job timing |
+| `upload.executor.queue.size` | > 50 | Consider increasing pool size |
+| `upload.executor.active.threads` | = maxPoolSize for > 1 min | Pool exhaustion, increase max |
+| `hikari.connections.active` | = maxPoolSize for > 1 min | DB pool exhaustion |
+
+### Logging
+
+Add to async service:
+```
+INFO  - Upload started: file={}, org={}, project={}, thread={}
+INFO  - Quota reserved: org={}, project={}, size={}, retries={}
+INFO  - File stored: key={}, duration={}ms
+INFO  - Upload complete: key={}, totalDuration={}ms
+ERROR - Upload failed: file={}, org={}, project={}, error={}
+```
+
+---
+
+## Testing Strategy
+
+### Load Test Scenarios
+
+| Scenario | Expected Result |
+|----------|-----------------|
+| 30 concurrent uploads, same org/project | All complete in < 3 seconds |
+| 30 concurrent uploads, 10 different projects | All complete in < 2 seconds |
+| 50 concurrent uploads, same org/project | 50 complete, no failures, < 5 seconds |
+| Upload when quota is 95% full | Correct rejection for over-quota files |
+| App restart mid-upload | Reconciliation corrects any drift |
+
+### Unit Tests
+
+| Test | Validates |
+|------|-----------|
+| OptimisticQuotaServiceTest | Retry on conflict, max attempts respected |
+| ConcurrentMediaUploadServiceTest | Context passed correctly, rollback on failure |
+| QuotaReconciliationServiceTest | Drift correction works |
+
+---
+
+## Rollback Plan
+
+If issues arise in production:
+
+### Quick Rollback (Config)
+```yaml
+# Disable async, fall back to synchronous
+media:
+  upload:
+    async-enabled: false
+```
+
+### Full Rollback (Code)
+1. Revert to `QuotaService` (pessimistic locking)
+2. Remove `@Async` from upload service
+3. Keep connection pool increase (no downside)
+
+---
+
+## Implementation Checklist
+
+- [ ] Add `spring-retry` and `spring-aspects` dependencies
+- [ ] Create DB migration for `version` columns
+- [ ] Add `@Version` to `OrgStorage` and `ProjectStorage` entities
+- [ ] Add `@EnableRetry` to main application class
+- [ ] Create `AsyncConfig` with thread pool
+- [ ] Create `OptimisticQuotaService`
+- [ ] Create `ConcurrentMediaUploadService`
+- [ ] Update `MediaController` to extract and pass context explicitly
+- [ ] Update `application.yml` with connection pool settings
+- [ ] Update rate limit capacity to 50
+- [ ] Add monitoring metrics
+- [ ] Write unit tests
+- [ ] Load test with 30 concurrent uploads
+- [ ] Update Overview.txt documentation
+
+---
+
+## Summary
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Locking | Pessimistic (blocking) | Optimistic (retry on conflict) |
+| File I/O | Sequential | Parallel (30 threads) |
+| Context | ThreadLocal throughout | Explicit parameters to async |
+| Connection Pool | 10 (default) | 30 |
+| WhatsApp | Synchronous | Synchronous (unchanged) |
+| 30 Upload Time | ~30 seconds | ~2-3 seconds |
+
+**Total code changes:** ~4 new files, ~3 modified files, 1 migration, config updates.
