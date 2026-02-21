@@ -14,16 +14,18 @@ import java.util.Optional;
 public interface OrgStorageRepository extends JpaRepository<OrgStorage, Long> {
 
     /**
-     * Pessimistic write lock — used during upload/delete to safely
-     * check and update used_bytes within a transaction.
+     * Pessimistic write lock — kept for release/reconciliation paths.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT o FROM OrgStorage o WHERE o.orgId = :orgId")
     Optional<OrgStorage> findByIdForUpdate(@Param("orgId") Long orgId);
 
     /**
-     * Sum of all project-level usage for reconciliation.
+     * Plain read for optimistic locking flow.
      */
+    @Query("SELECT o FROM OrgStorage o WHERE o.orgId = :orgId")
+    Optional<OrgStorage> findByOrgId(@Param("orgId") Long orgId);
+
     @Query("SELECT COALESCE(SUM(p.usedBytes), 0) FROM ProjectStorage p WHERE p.orgId = :orgId")
     long sumProjectUsedBytes(@Param("orgId") Long orgId);
 }

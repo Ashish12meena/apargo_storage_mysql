@@ -30,13 +30,15 @@ public class ProjectStorage {
     @Builder.Default
     private Long usedBytes = 0L;
 
+    @Version
+    @Column(name = "version")
+    private Long version;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
-
-    // ── Helper methods ──────────────────────────────────────────────────
 
     public long getRemainingBytes() {
         return maxBytes - usedBytes;

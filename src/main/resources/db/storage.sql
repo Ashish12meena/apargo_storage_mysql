@@ -99,6 +99,11 @@ CREATE TABLE project_storage (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+ALTER TABLE org_storage ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE project_storage ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
+
+
 -- V3__seed_quota_data.sql
 -- Seed quota data for development/testing.
 -- Adjust org_id and project_id to match your X-Org-Id / X-Project-Id headers.

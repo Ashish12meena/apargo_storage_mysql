@@ -16,19 +16,22 @@ import java.util.Optional;
 public interface ProjectStorageRepository extends JpaRepository<ProjectStorage, ProjectStorageId> {
 
     /**
-     * Pessimistic write lock — always acquired BEFORE the org-level lock
-     * to maintain consistent lock ordering and prevent deadlocks.
+     * Pessimistic write lock — kept for release/reconciliation paths.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT p FROM ProjectStorage p WHERE p.orgId = :orgId AND p.projectId = :projectId")
     Optional<ProjectStorage> findByIdForUpdate(@Param("orgId") Long orgId,
                                                 @Param("projectId") Long projectId);
 
+    /**
+     * Plain read for optimistic locking flow.
+     */
+    @Query("SELECT p FROM ProjectStorage p WHERE p.orgId = :orgId AND p.projectId = :projectId")
+    Optional<ProjectStorage> findByOrgAndProject(@Param("orgId") Long orgId,
+                                                  @Param("projectId") Long projectId);
+
     List<ProjectStorage> findByOrgId(Long orgId);
 
-    /**
-     * Actual media bytes for a specific project — used during reconciliation.
-     */
     @Query("SELECT COALESCE(SUM(m.fileSize), 0) FROM Media m " +
            "WHERE m.organisationId = :orgId AND m.projectId = :projectId AND m.status = 'ACTIVE'")
     long sumActiveMediaBytes(@Param("orgId") Long orgId,

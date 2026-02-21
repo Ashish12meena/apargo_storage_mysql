@@ -1,8 +1,10 @@
 package com.aigreentick.services.storage.controller.v1;
 
+import com.aigreentick.services.storage.context.UserContext;
 import com.aigreentick.services.storage.dto.response.ApiResponse;
 import com.aigreentick.services.storage.dto.response.MediaUploadResponse;
 import com.aigreentick.services.storage.dto.response.UserMediaResponse;
+import com.aigreentick.services.storage.service.impl.media.ConcurrentMediaUploadService;
 import com.aigreentick.services.storage.service.impl.media.MediaUploadOrchestrator;
 import com.aigreentick.services.storage.validator.MediaRequestValidator;
 import io.swagger.v3.oas.annotations.Operation;
@@ -17,7 +19,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-
 import java.time.Duration;
 
 @Slf4j
@@ -27,6 +28,7 @@ import java.time.Duration;
 @Tag(name = "Media", description = "Upload and retrieve media files")
 public class MediaController {
 
+    private final ConcurrentMediaUploadService concurrentUploadService;
     private final MediaUploadOrchestrator orchestrator;
     private final MediaRequestValidator validator;
 
@@ -34,10 +36,21 @@ public class MediaController {
     @Operation(summary = "Upload a media file")
     public ResponseEntity<ApiResponse<MediaUploadResponse>> upload(
             @RequestParam("file") MultipartFile file,
-        @RequestHeader("X-Waba-Id")String wabaId) {
+            @RequestHeader("X-Waba-Id") String wabaId) {
 
-        log.info("Upload request: {}", file.getOriginalFilename());
-        return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", orchestrator.uploadMedia(file,wabaId)));
+        // Extract context HERE on HTTP thread — ThreadLocal still works
+        Long orgId = UserContext.getOrganisationId();
+        Long projectId = UserContext.getProjectId();
+
+        validator.validateUserContext();
+
+        log.info("Upload request: file={} org={} project={}", file.getOriginalFilename(), orgId, projectId);
+
+        // Pass context explicitly — no ThreadLocal dependency downstream
+        MediaUploadResponse response = concurrentUploadService
+                .uploadMediaSync(file, wabaId, orgId, projectId);
+
+        return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", response));
     }
 
     @GetMapping
