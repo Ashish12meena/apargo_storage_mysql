@@ -21,7 +21,6 @@ import org.springframework.web.util.UriComponentsBuilder;
 import reactor.core.publisher.Mono;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URI;
 
 @Slf4j
@@ -79,115 +78,116 @@ public class FacebookMediaClient {
         }
     }
 
-    // ── Resumable Upload — Step 1: Initiate session ──────────────────────────
+    //resumable media removed from this service
+    // // ── Resumable Upload — Step 1: Initiate session ──────────────────────────
 
-    @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    public FacebookApiResult<UploadSessionResponse> initiateUploadSession(
-            String fileName, long fileSize, String mimeType, String wabaAppId, String accessToken) {
+    // @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // public FacebookApiResult<UploadSessionResponse> initiateUploadSession(
+    //         String fileName, long fileSize, String mimeType, String wabaAppId, String accessToken) {
 
-        if (!properties.isOutgoingEnabled()) {
-            return FacebookApiResult.error("Outgoing requests disabled", 503);
-        }
+    //     if (!properties.isOutgoingEnabled()) {
+    //         return FacebookApiResult.error("Outgoing requests disabled", 503);
+    //     }
 
-        URI uri = UriComponentsBuilder.fromUriString(properties.getBaseUrl())
-                .pathSegment(properties.getApiVersion(), wabaAppId, "uploads")
-                .queryParam("file_name", fileName)
-                .queryParam("file_length", fileSize)
-                .queryParam("file_type", mimeType)
-                .queryParam("access_token", accessToken)
-                .build().toUri();
+    //     URI uri = UriComponentsBuilder.fromUriString(properties.getBaseUrl())
+    //             .pathSegment(properties.getApiVersion(), wabaAppId, "uploads")
+    //             .queryParam("file_name", fileName)
+    //             .queryParam("file_length", fileSize)
+    //             .queryParam("file_type", mimeType)
+    //             .queryParam("access_token", accessToken)
+    //             .build().toUri();
 
-        try {
-            UploadSessionResponse resp = webClientBuilder.build()
-                    .post().uri(uri)
-                    .accept(MediaType.APPLICATION_JSON)
-                    .retrieve()
-                    .onStatus(HttpStatusCode::is4xxClientError, r -> r.bodyToMono(String.class)
-                            .flatMap(e -> Mono.error(new RuntimeException("4xx: " + e))))
-                    .onStatus(HttpStatusCode::is5xxServerError, r -> r.bodyToMono(String.class)
-                            .flatMap(e -> Mono.error(new RuntimeException("5xx: " + e))))
-                    .bodyToMono(UploadSessionResponse.class)
-                    .block();
+    //     try {
+    //         UploadSessionResponse resp = webClientBuilder.build()
+    //                 .post().uri(uri)
+    //                 .accept(MediaType.APPLICATION_JSON)
+    //                 .retrieve()
+    //                 .onStatus(HttpStatusCode::is4xxClientError, r -> r.bodyToMono(String.class)
+    //                         .flatMap(e -> Mono.error(new RuntimeException("4xx: " + e))))
+    //                 .onStatus(HttpStatusCode::is5xxServerError, r -> r.bodyToMono(String.class)
+    //                         .flatMap(e -> Mono.error(new RuntimeException("5xx: " + e))))
+    //                 .bodyToMono(UploadSessionResponse.class)
+    //                 .block();
 
-            log.info("Upload session initiated. sessionId={}", resp != null ? resp.getUploadSessionId() : null);
-            return FacebookApiResult.success(resp, 200);
+    //         log.info("Upload session initiated. sessionId={}", resp != null ? resp.getUploadSessionId() : null);
+    //         return FacebookApiResult.success(resp, 200);
 
-        } catch (WebClientResponseException ex) {
-            return FacebookApiResult.error(ex.getResponseBodyAsString(), ex.getStatusCode().value());
-        } catch (Exception ex) {
-            log.error("Error initiating upload session for appId={}", wabaAppId, ex);
-            return FacebookApiResult.error(ex.getMessage(), 500);
-        }
-    }
+    //     } catch (WebClientResponseException ex) {
+    //         return FacebookApiResult.error(ex.getResponseBodyAsString(), ex.getStatusCode().value());
+    //     } catch (Exception ex) {
+    //         log.error("Error initiating upload session for appId={}", wabaAppId, ex);
+    //         return FacebookApiResult.error(ex.getMessage(), 500);
+    //     }
+    // }
 
-    // ── Resumable Upload — Step 2: Upload chunk ──────────────────────────────
+    // // ── Resumable Upload — Step 2: Upload chunk ──────────────────────────────
 
-    @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    public FacebookApiResult<UploadMediaResponse> uploadResumableChunk(
-            String sessionId, File file, String accessToken, String offset) throws IOException {
+    // @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // public FacebookApiResult<UploadMediaResponse> uploadResumableChunk(
+    //         String sessionId, File file, String accessToken, String offset) throws IOException {
 
-        if (!file.exists()) {
-            return FacebookApiResult.error("File not found: " + file.getAbsolutePath(), 400);
-        }
+    //     if (!file.exists()) {
+    //         return FacebookApiResult.error("File not found: " + file.getAbsolutePath(), 400);
+    //     }
 
-        URI uri = URI.create(properties.getBaseUrl() + "/" + properties.getApiVersion() + "/" + sessionId);
+    //     URI uri = URI.create(properties.getBaseUrl() + "/" + properties.getApiVersion() + "/" + sessionId);
 
-        try {
-            UploadMediaResponse resp = webClientBuilder.build()
-                    .post().uri(uri)
-                    .header(HttpHeaders.AUTHORIZATION, "OAuth " + accessToken.trim())
-                    .header("file_offset", offset.trim())
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .body(BodyInserters.fromResource(new FileSystemResource(file)))
-                    .retrieve()
-                    .onStatus(HttpStatusCode::is4xxClientError, r -> r.bodyToMono(String.class)
-                            .flatMap(e -> Mono.error(new RuntimeException("4xx: " + e))))
-                    .onStatus(HttpStatusCode::is5xxServerError, r -> r.bodyToMono(String.class)
-                            .flatMap(e -> Mono.error(new RuntimeException("5xx: " + e))))
-                    .bodyToMono(UploadMediaResponse.class)
-                    .block();
+    //     try {
+    //         UploadMediaResponse resp = webClientBuilder.build()
+    //                 .post().uri(uri)
+    //                 .header(HttpHeaders.AUTHORIZATION, "OAuth " + accessToken.trim())
+    //                 .header("file_offset", offset.trim())
+    //                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
+    //                 .body(BodyInserters.fromResource(new FileSystemResource(file)))
+    //                 .retrieve()
+    //                 .onStatus(HttpStatusCode::is4xxClientError, r -> r.bodyToMono(String.class)
+    //                         .flatMap(e -> Mono.error(new RuntimeException("4xx: " + e))))
+    //                 .onStatus(HttpStatusCode::is5xxServerError, r -> r.bodyToMono(String.class)
+    //                         .flatMap(e -> Mono.error(new RuntimeException("5xx: " + e))))
+    //                 .bodyToMono(UploadMediaResponse.class)
+    //                 .block();
 
-            if (resp == null || resp.getFacebookImageUrl() == null) {
-                throw new IllegalStateException("Upload failed — handle not returned");
-            }
+    //         if (resp == null || resp.getFacebookImageUrl() == null) {
+    //             throw new IllegalStateException("Upload failed — handle not returned");
+    //         }
 
-            log.info("Chunk uploaded. handle={}", resp.getFacebookImageUrl());
-            return FacebookApiResult.success(resp, 200);
+    //         log.info("Chunk uploaded. handle={}", resp.getFacebookImageUrl());
+    //         return FacebookApiResult.success(resp, 200);
 
-        } catch (WebClientResponseException ex) {
-            return FacebookApiResult.error(ex.getResponseBodyAsString(), ex.getStatusCode().value());
-        } catch (Exception ex) {
-            log.error("Error uploading chunk. sessionId={}", sessionId, ex);
-            return FacebookApiResult.error(ex.getMessage(), 500);
-        }
-    }
+    //     } catch (WebClientResponseException ex) {
+    //         return FacebookApiResult.error(ex.getResponseBodyAsString(), ex.getStatusCode().value());
+    //     } catch (Exception ex) {
+    //         log.error("Error uploading chunk. sessionId={}", sessionId, ex);
+    //         return FacebookApiResult.error(ex.getMessage(), 500);
+    //     }
+    // }
 
-    // ── Resumable Upload — Step 3: Check offset ──────────────────────────────
+    // // ── Resumable Upload — Step 3: Check offset ──────────────────────────────
 
-    @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
-    public UploadOffsetResponse getUploadOffset(String sessionId, String accessToken) {
-        URI uri = UriComponentsBuilder.fromUriString(properties.getBaseUrl())
-                .pathSegment(properties.getApiVersion(), sessionId)
-                .queryParam("access_token", accessToken)
-                .build().toUri();
+    // @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    // public UploadOffsetResponse getUploadOffset(String sessionId, String accessToken) {
+    //     URI uri = UriComponentsBuilder.fromUriString(properties.getBaseUrl())
+    //             .pathSegment(properties.getApiVersion(), sessionId)
+    //             .queryParam("access_token", accessToken)
+    //             .build().toUri();
 
-        return webClientBuilder.build()
-                .get().uri(uri)
-                .header(HttpHeaders.AUTHORIZATION, "OAuth " + accessToken)
-                .accept(MediaType.APPLICATION_JSON)
-                .retrieve()
-                .bodyToMono(UploadOffsetResponse.class)
-                .doOnNext(r -> log.info("File offset: {}", r.getFileOffset()))
-                .block();
-    }
+    //     return webClientBuilder.build()
+    //             .get().uri(uri)
+    //             .header(HttpHeaders.AUTHORIZATION, "OAuth " + accessToken)
+    //             .accept(MediaType.APPLICATION_JSON)
+    //             .retrieve()
+    //             .bodyToMono(UploadOffsetResponse.class)
+    //             .doOnNext(r -> log.info("File offset: {}", r.getFileOffset()))
+    //             .block();
+    // }
 
-    // ── Fallbacks ────────────────────────────────────────────────────────────
+    // // ── Fallbacks ────────────────────────────────────────────────────────────
 
     @SuppressWarnings("unused")
     private FacebookApiResult<WhatsappMediaUploadResponse> uploadMediaFallback(
@@ -196,10 +196,10 @@ public class FacebookMediaClient {
         return FacebookApiResult.error("Media upload failed: " + ex.getMessage(), 503);
     }
 
-    @SuppressWarnings("unused")
-    private <T> FacebookApiResult<T> resumableFallback(
-            Object p1, Object p2, Object p3, Object p4, Object p5, Throwable ex) {
-        log.warn("Fallback: resumable upload. cause={}", ex.getMessage());
-        return FacebookApiResult.error("Upload operation failed: " + ex.getMessage(), 503);
-    }
+    // @SuppressWarnings("unused")
+    // private <T> FacebookApiResult<T> resumableFallback(
+    //         Object p1, Object p2, Object p3, Object p4, Object p5, Throwable ex) {
+    //     log.warn("Fallback: resumable upload. cause={}", ex.getMessage());
+    //     return FacebookApiResult.error("Upload operation failed: " + ex.getMessage(), 503);
+    // }
 }
