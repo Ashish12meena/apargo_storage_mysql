@@ -1,27 +1,24 @@
-#eureka
+# ─── Service Discovery ────────────────────────────────────────────────────────
 eureka:
   client:
     service-url:
-      defaultZone: http://localhost:8888/eureka/  # Your Eureka server URL
+      defaultZone: ${EUREKA_URL:http://localhost:8888/eureka/}
     register-with-eureka: true
     fetch-registry: true
-    enabled: false
+    enabled: ${EUREKA_ENABLED:false}
 
+# ─── External Service URLs ───────────────────────────────────────────────────
 
 user-service:
-    base-url: http://localhost:7999
-    api-version: v1
-    outgoing-enabled: true
-    connect-timeout: 5000
-    read-timeout: 10000
-
-organisation-service:
-  base-url: http://localhost:7998
+  base-url: ${USER_SERVICE_URL:http://localhost:7999}
+  api-version: v1
   outgoing-enabled: true
-  connect-timeout: 5000
-  read-timeout: 10000
+
+waba-service:
+  base-url: ${WABA_SERVICE_URL:http://localhost:8001}
+  outgoing-enabled: true
 
 whatsapp-service:
-  api-version: v23.0
-  base-url: https://graph.facebook.com 
+  api-version: ${FB_API_VERSION:v23.0}
+  base-url: ${FB_GRAPH_URL:https://graph.facebook.com}
   outgoing-enabled: true

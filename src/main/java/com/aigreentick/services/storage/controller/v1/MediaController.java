@@ -1,5 +1,6 @@
 package com.aigreentick.services.storage.controller.v1;
 
+import com.aigreentick.services.storage.constants.HeaderConstants;
 import com.aigreentick.services.storage.context.UserContext;
 import com.aigreentick.services.storage.dto.response.ApiResponse;
 import com.aigreentick.services.storage.dto.response.BatchMediaUploadResponse;
@@ -31,118 +32,114 @@ import java.util.List;
 @Tag(name = "Media", description = "Upload and retrieve media files")
 public class MediaController {
 
-        private final ConcurrentMediaUploadService concurrentUploadService;
-        private final MediaUploadOrchestrator orchestrator;
-        private final MediaRequestValidator validator;
-        private final BatchMediaUploadService batchUploadService;
+    private final ConcurrentMediaUploadService concurrentUploadService;
+    private final MediaUploadOrchestrator orchestrator;
+    private final MediaRequestValidator validator;
+    private final BatchMediaUploadService batchUploadService;
 
-        @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-        @Operation(summary = "Upload a media file")
-        public ResponseEntity<ApiResponse<MediaUploadResponse>> upload(
-                        @RequestParam("file") MultipartFile file,
-                        @RequestHeader("X-Waba-Id") String wabaId) {
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Upload a single media file")
+    public ResponseEntity<ApiResponse<MediaUploadResponse>> upload(
+            @RequestParam("file") MultipartFile file,
+            @RequestHeader(HeaderConstants.WABA_ID) String wabaId) {
 
-                // Extract context HERE on HTTP thread — ThreadLocal still works
-                Long orgId = UserContext.getOrganisationId();
-                Long projectId = UserContext.getProjectId();
+        Long orgId = UserContext.getOrganisationId();
+        Long projectId = UserContext.getProjectId();
+        validator.validateUserContext();
 
-                validator.validateUserContext();
+        log.info("Upload request: file={} org={} project={}", file.getOriginalFilename(), orgId, projectId);
 
-                log.info("Upload request: file={} org={} project={}", file.getOriginalFilename(), orgId, projectId);
+        MediaUploadResponse response = concurrentUploadService
+                .uploadMediaSync(file, wabaId, orgId, projectId);
 
-                // Pass context explicitly — no ThreadLocal dependency downstream
-                MediaUploadResponse response = concurrentUploadService
-                                .uploadMediaSync(file, wabaId, orgId, projectId);
+        return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", response));
+    }
 
-                return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", response));
-        }
+    @PostMapping(value = "/upload/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Upload multiple media files in a single batch")
+    public ResponseEntity<ApiResponse<BatchMediaUploadResponse>> uploadBatch(
+            @RequestParam("files") List<MultipartFile> files,
+            @RequestHeader(HeaderConstants.WABA_ID) String wabaId) {
 
-        @GetMapping
-        @Operation(summary = "Get all media (paginated)")
-        public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getAll(
-                        @RequestParam(required = false) Integer page,
-                        @RequestParam(required = false) Integer size) {
+        Long orgId = UserContext.getOrganisationId();
+        Long projectId = UserContext.getProjectId();
+        validator.validateUserContext();
 
-                validator.validateUserContext();
-                Pageable pageable = validator.validateAndBuildPageable(page, size);
-                return ResponseEntity.ok(ApiResponse.success(orchestrator.getMedia(pageable)));
-        }
+        log.info("Batch upload: fileCount={} org={} project={}", files.size(), orgId, projectId);
 
-        @GetMapping("/images")
-        @Operation(summary = "Get images")
-        public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getImages(
-                        @RequestParam(required = false) Integer page,
-                        @RequestParam(required = false) Integer size) {
+        BatchMediaUploadResponse response = batchUploadService
+                .uploadBatch(files, wabaId, orgId, projectId);
 
-                validator.validateUserContext();
-                return ResponseEntity.ok(ApiResponse.success(
-                                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.IMAGE,
-                                                validator.validateAndBuildPageable(page, size))));
-        }
+        return ResponseEntity.ok(ApiResponse.success("Batch upload complete", response));
+    }
 
-        @GetMapping("/videos")
-        @Operation(summary = "Get videos")
-        public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getVideos(
-                        @RequestParam(required = false) Integer page,
-                        @RequestParam(required = false) Integer size) {
+    @GetMapping
+    @Operation(summary = "Get all media (paginated)")
+    public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getAll(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
 
-                validator.validateUserContext();
-                return ResponseEntity.ok(ApiResponse.success(
-                                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.VIDEO,
-                                                validator.validateAndBuildPageable(page, size))));
-        }
+        validator.validateUserContext();
+        Pageable pageable = validator.validateAndBuildPageable(page, size);
+        return ResponseEntity.ok(ApiResponse.success(orchestrator.getMedia(pageable)));
+    }
 
-        @GetMapping("/documents")
-        @Operation(summary = "Get documents")
-        public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getDocuments(
-                        @RequestParam(required = false) Integer page,
-                        @RequestParam(required = false) Integer size) {
+    @GetMapping("/images")
+    @Operation(summary = "Get images")
+    public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getImages(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
 
-                validator.validateUserContext();
-                return ResponseEntity.ok(ApiResponse.success(
-                                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.DOCUMENT,
-                                                validator.validateAndBuildPageable(page, size))));
-        }
+        validator.validateUserContext();
+        return ResponseEntity.ok(ApiResponse.success(
+                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.IMAGE,
+                        validator.validateAndBuildPageable(page, size))));
+    }
 
-        @GetMapping("/audio")
-        @Operation(summary = "Get audio files")
-        public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getAudio(
-                        @RequestParam(required = false) Integer page,
-                        @RequestParam(required = false) Integer size) {
+    @GetMapping("/videos")
+    @Operation(summary = "Get videos")
+    public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getVideos(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
 
-                validator.validateUserContext();
-                return ResponseEntity.ok(ApiResponse.success(
-                                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.AUDIO,
-                                                validator.validateAndBuildPageable(page, size))));
-        }
+        validator.validateUserContext();
+        return ResponseEntity.ok(ApiResponse.success(
+                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.VIDEO,
+                        validator.validateAndBuildPageable(page, size))));
+    }
 
-        @GetMapping("/public-url")
-        @Operation(summary = "Get a public/pre-signed URL for a storage key")
-        public ResponseEntity<ApiResponse<String>> getPublicUrl(
-                        @RequestParam @NotBlank String storageKey,
-                        @RequestParam(required = false, defaultValue = "3600") Long durationSeconds) {
+    @GetMapping("/documents")
+    @Operation(summary = "Get documents")
+    public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getDocuments(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
 
-                validator.validateUserContext();
-                String url = orchestrator.getPublicUrl(storageKey, Duration.ofSeconds(durationSeconds));
-                return ResponseEntity.ok(ApiResponse.success("Public URL generated", url));
-        }
+        validator.validateUserContext();
+        return ResponseEntity.ok(ApiResponse.success(
+                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.DOCUMENT,
+                        validator.validateAndBuildPageable(page, size))));
+    }
 
-        @PostMapping(value = "/upload/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-        @Operation(summary = "Upload multiple media files in a single batch")
-        public ResponseEntity<ApiResponse<BatchMediaUploadResponse>> uploadBatch(
-                        @RequestParam("files") List<MultipartFile> files,
-                        @RequestHeader("X-Waba-Id") String wabaId) {
+    @GetMapping("/audio")
+    @Operation(summary = "Get audio files")
+    public ResponseEntity<ApiResponse<Page<UserMediaResponse>>> getAudio(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
 
-                Long orgId = UserContext.getOrganisationId();
-                Long projectId = UserContext.getProjectId();
+        validator.validateUserContext();
+        return ResponseEntity.ok(ApiResponse.success(
+                orchestrator.getMediaByType(com.aigreentick.services.storage.enums.MediaType.AUDIO,
+                        validator.validateAndBuildPageable(page, size))));
+    }
 
-                validator.validateUserContext();
+    @GetMapping("/public-url")
+    @Operation(summary = "Get a public/pre-signed URL for a storage key")
+    public ResponseEntity<ApiResponse<String>> getPublicUrl(
+            @RequestParam @NotBlank String storageKey,
+            @RequestParam(required = false, defaultValue = "3600") Long durationSeconds) {
 
-                log.info("Batch upload request: fileCount={} org={} project={}", files.size(), orgId, projectId);
-
-                BatchMediaUploadResponse response = batchUploadService
-                                .uploadBatch(files, wabaId, orgId, projectId);
-
-                return ResponseEntity.ok(ApiResponse.success("Batch upload complete", response));
-        }
+        validator.validateUserContext();
+        String url = orchestrator.getPublicUrl(storageKey, Duration.ofSeconds(durationSeconds));
+        return ResponseEntity.ok(ApiResponse.success("Public URL generated", url));
+    }
 }

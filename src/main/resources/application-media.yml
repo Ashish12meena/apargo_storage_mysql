@@ -1,16 +1,28 @@
+# ─── Media Upload & Validation ────────────────────────────────────────────────
 media:
   service:
     incoming-enabled: true
     upload-path: ${MEDIA_UPLOAD_PATH:${user.home}/aigreentick/media-uploads}
-    base-url: http://localhost:7998/api/v1/media/
-    upload-max-size: 52428800
+    base-url: ${MEDIA_BASE_URL:http://localhost:7998/api/v1/media/}
+
+    # Single file limit
+    upload-max-size: 52428800     # 50 MB
+
+    # Batch upload limits
+    batch-max-files: 20
+    batch-max-total-size: 104857600   # 100 MB
+    batch-parallel-threads: 10
+
+    # Allowed MIME types per category
     upload-allowed-image-types:
       - image/jpeg
       - image/jpg
       - image/png
+
     upload-allowed-video-types:
       - video/mp4
       - video/3gpp
+
     upload-allowed-document-types:
       - application/pdf
       - text/plain
@@ -20,35 +32,32 @@ media:
       - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
       - application/vnd.ms-powerpoint
       - application/vnd.openxmlformats-officedocument.presentationml.presentation
+
     upload-allowed-audio-types:
       - audio/mp4
       - audio/mpeg
       - audio/ogg
       - audio/aac
       - audio/amr
-    base:
-      # baseUrl property: media.service.base.url
-      url: http://localhost:8081/api/v1/media/
 
-# Storage Configuration
+# ─── Storage Root & Temp Paths ────────────────────────────────────────────────
 storage:
   root: ${STORAGE_ROOT_PATH:./media-uploads}
   temp-dir: ${STORAGE_TEMP_PATH:./media-uploads/temp}
-  max-file-size: 524288000 # 500MB
-  allowed-mime-types:
-    - image/jpeg
-    - image/png
-    - video/mp4
-    - application/pdf
+  max-file-size: 524288000        # 500 MB absolute ceiling
 
-# Error Messages
-error:
-  messages:
-    file-empty: "File cannot be empty"
-    file-too-large: "File size exceeds maximum allowed size"
-    invalid-mime-type: "File type is not supported"
-    storage-full: "Storage quota exceeded"
-    file-not-found: "Requested file not found"
-    upload-failed: "File upload failed"
-    delete-failed: "File deletion failed"
-    invalid-filename: "Invalid filename format"
+# ─── Rate Limiting (Bucket4j) ────────────────────────────────────────────────
+rate-limiting:
+  enabled: ${RATE_LIMIT_ENABLED:true}
+  default-capacity: 100
+  default-refill-tokens: 100
+  default-refill-duration: 1m
+  endpoints:
+    upload:
+      capacity: 50
+      refill-tokens: 50
+      refill-duration: 1m
+    get-media:
+      capacity: 100
+      refill-tokens: 100
+      refill-duration: 1m

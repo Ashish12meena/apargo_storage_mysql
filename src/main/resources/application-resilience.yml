@@ -1,20 +1,61 @@
+# ─── Resilience4j ─────────────────────────────────────────────────────────────
+# Instance names must match @Retry/@CircuitBreaker/@RateLimiter annotations in code
+
 resilience:
+  retry-max-attempts: 3
+  retry-wait-duration-ms: 1000
+  circuit-breaker-sliding-window-size: 20
+  circuit-breaker-failure-rate-threshold: 50.0
+  circuit-breaker-slow-call-rate-threshold: 50.0
+  circuit-breaker-slow-call-duration-threshold-sec: 2
+  circuit-breaker-wait-duration-in-open-state-sec: 10
+  circuit-breaker-permitted-calls-in-half-open-state: 5
+  circuit-breaker-automatic-transition-enabled: true
+  circuit-breaker-minimum-number-of-calls: 10
+  rate-limiter-limit-for-period: 10
+  rate-limiter-limit-refresh-period-sec: 1
+  rate-limiter-timeout-duration-ms: 0
+
+resilience4j:
   retry:
-    max-attempts: 3
-    wait-duration-ms: 1000
-   
-         
-  circuit-breaker:
-    sliding-window-size: 20
-    failure-rate-threshold: 50.0
-    slow-call-rate-threshold: 50.0
-    slow-call-duration-threshold-sec: 2
-    wait-duration-in-open-state-sec: 10
-    permitted-calls-in-half-open-state: 5
-    automatic-transition-enabled: true
-    minimum-number-of-calls: 10
-    
-  rate-limiter:
-    limit-for-period: 10
-    limit-refresh-period-sec: 1
-    timeout-duration-ms: 0
+    instances:
+      whatsappMediaRetry:
+        max-attempts: 3
+        wait-duration: 1s
+      facebookUploadRetry:
+        max-attempts: 3
+        wait-duration: 1s
+      organisationCB:
+        max-attempts: 2
+        wait-duration: 500ms
+
+  circuitbreaker:
+    instances:
+      whatsappMediaCB:
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 5
+        minimum-number-of-calls: 10
+        automatic-transition-from-open-to-half-open-enabled: true
+      facebookUploadCB:
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        minimum-number-of-calls: 10
+      organisationCB:
+        sliding-window-size: 10
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 15s
+        minimum-number-of-calls: 5
+
+  ratelimiter:
+    instances:
+      whatsappMediaRL:
+        limit-for-period: 22
+        limit-refresh-period: 1s
+        timeout-duration: 0ms
+      facebookUploadRL:
+        limit-for-period: 5
+        limit-refresh-period: 1s
+        timeout-duration: 0ms

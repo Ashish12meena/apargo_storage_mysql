@@ -1,5 +1,6 @@
 package com.aigreentick.services.storage.integration.facebook;
 
+import com.aigreentick.services.storage.constants.ResilienceConstants;
 import com.aigreentick.services.storage.integration.facebook.dto.*;
 import com.aigreentick.services.storage.integration.facebook.properties.FacebookClientProperties;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
@@ -28,21 +29,14 @@ import java.net.URI;
 @RequiredArgsConstructor
 public class FacebookMediaClient {
 
-    private static final String CB_MEDIA   = "whatsappMediaCB";
-    private static final String CB_UPLOAD  = "facebookUploadCB";
-    private static final String RL_MEDIA   = "whatsappMediaRL";
-    private static final String RL_UPLOAD  = "facebookUploadRL";
-    private static final String RT_MEDIA   = "whatsappMediaRetry";
-    private static final String RT_UPLOAD  = "facebookUploadRetry";
-
     private final WebClient.Builder webClientBuilder;
     private final FacebookClientProperties properties;
 
     // ── Direct Upload ────────────────────────────────────────────────────────
 
-    @Retry(name = RT_MEDIA, fallbackMethod = "uploadMediaFallback")
-    @CircuitBreaker(name = CB_MEDIA, fallbackMethod = "uploadMediaFallback")
-    @RateLimiter(name = RL_MEDIA, fallbackMethod = "uploadMediaFallback")
+    @Retry(name = ResilienceConstants.RT_WHATSAPP_MEDIA, fallbackMethod = "uploadMediaFallback")
+    @CircuitBreaker(name = ResilienceConstants.CB_WHATSAPP_MEDIA, fallbackMethod = "uploadMediaFallback")
+    @RateLimiter(name = ResilienceConstants.RL_WHATSAPP_MEDIA, fallbackMethod = "uploadMediaFallback")
     public FacebookApiResult<WhatsappMediaUploadResponse> uploadMedia(
             File file, String mimeType, String phoneNumberId, String accessToken) {
 
@@ -87,9 +81,9 @@ public class FacebookMediaClient {
 
     // ── Resumable Upload — Step 1: Initiate session ──────────────────────────
 
-    @Retry(name = RT_UPLOAD, fallbackMethod = "resumableFallback")
-    @CircuitBreaker(name = CB_UPLOAD, fallbackMethod = "resumableFallback")
-    @RateLimiter(name = RL_UPLOAD, fallbackMethod = "resumableFallback")
+    @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
     public FacebookApiResult<UploadSessionResponse> initiateUploadSession(
             String fileName, long fileSize, String mimeType, String wabaAppId, String accessToken) {
 
@@ -130,9 +124,9 @@ public class FacebookMediaClient {
 
     // ── Resumable Upload — Step 2: Upload chunk ──────────────────────────────
 
-    @Retry(name = RT_UPLOAD, fallbackMethod = "resumableFallback")
-    @CircuitBreaker(name = CB_UPLOAD, fallbackMethod = "resumableFallback")
-    @RateLimiter(name = RL_UPLOAD, fallbackMethod = "resumableFallback")
+    @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
     public FacebookApiResult<UploadMediaResponse> uploadResumableChunk(
             String sessionId, File file, String accessToken, String offset) throws IOException {
 
@@ -172,11 +166,11 @@ public class FacebookMediaClient {
         }
     }
 
-    // ── Resumable Upload — Step 3: Check offset ───────────────────────────────
+    // ── Resumable Upload — Step 3: Check offset ──────────────────────────────
 
-    @Retry(name = RT_UPLOAD, fallbackMethod = "resumableFallback")
-    @CircuitBreaker(name = CB_UPLOAD, fallbackMethod = "resumableFallback")
-    @RateLimiter(name = RL_UPLOAD, fallbackMethod = "resumableFallback")
+    @Retry(name = ResilienceConstants.RT_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    @CircuitBreaker(name = ResilienceConstants.CB_FB_UPLOAD, fallbackMethod = "resumableFallback")
+    @RateLimiter(name = ResilienceConstants.RL_FB_UPLOAD, fallbackMethod = "resumableFallback")
     public UploadOffsetResponse getUploadOffset(String sessionId, String accessToken) {
         URI uri = UriComponentsBuilder.fromUriString(properties.getBaseUrl())
                 .pathSegment(properties.getApiVersion(), sessionId)
@@ -193,7 +187,7 @@ public class FacebookMediaClient {
                 .block();
     }
 
-    // ── Fallbacks ─────────────────────────────────────────────────────────────
+    // ── Fallbacks ────────────────────────────────────────────────────────────
 
     @SuppressWarnings("unused")
     private FacebookApiResult<WhatsappMediaUploadResponse> uploadMediaFallback(
@@ -203,7 +197,8 @@ public class FacebookMediaClient {
     }
 
     @SuppressWarnings("unused")
-    private <T> FacebookApiResult<T> resumableFallback(Object p1, Object p2, Object p3, Object p4, Object p5, Throwable ex) {
+    private <T> FacebookApiResult<T> resumableFallback(
+            Object p1, Object p2, Object p3, Object p4, Object p5, Throwable ex) {
         log.warn("Fallback: resumable upload. cause={}", ex.getMessage());
         return FacebookApiResult.error("Upload operation failed: " + ex.getMessage(), 503);
     }
