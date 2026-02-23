@@ -16,6 +16,11 @@ public class MediaProperties {
     private String uploadPath; // Corresponds to media.service.upload.path
     private String baseUrl;
 
+    // Batch upload configuration
+    private int batchMaxFiles = 20;
+    private long batchMaxTotalSize = 104857600L; // 100 MB
+    private int batchParallelThreads = 10;
+
     // Properties for media upload constraints
     private long uploadMaxSize = 52428800; // Default: 50MB
     private List<String> uploadAllowedImageTypes;
@@ -23,13 +28,13 @@ public class MediaProperties {
     private List<String> uploadAllowedDocumentTypes;
     private List<String> uploadAllowedAudioTypes;
 
-     /**
+    /**
      * Check if a MIME type is supported by WhatsApp
      */
     public boolean isSupported(String mime) {
-        return uploadAllowedImageTypes.contains(mime) 
-            || uploadAllowedVideoTypes.contains(mime) 
-            || uploadAllowedAudioTypes.contains(mime) 
-            || uploadAllowedDocumentTypes.contains(mime);
+        return uploadAllowedImageTypes.contains(mime)
+                || uploadAllowedVideoTypes.contains(mime)
+                || uploadAllowedAudioTypes.contains(mime)
+                || uploadAllowedDocumentTypes.contains(mime);
     }
 }

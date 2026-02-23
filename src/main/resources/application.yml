@@ -16,7 +16,7 @@ spring:
     multipart:
       enabled: true
       max-file-size: 50MB
-      max-request-size: 50MB
+      max-request-size: 200MB  
   flyway:
     enabled: true
     baseline-on-migrate: true
@@ -131,6 +131,13 @@ whatsapp-service:
   api-version: v23.0
   base-url: https://graph.facebook.com
   outgoing-enabled: true
+
+
+media:
+  service:
+    batch-max-files: 20
+    batch-max-total-size: 104857600    # 100 MB
+    batch-parallel-threads: 10
 
 # ── application-resilience.yml (typo fixed from "resilence") ─────────────────
 resilience4j:

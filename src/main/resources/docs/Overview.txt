@@ -8,7 +8,7 @@ The **Storage Service** is a Spring Boot microservice built for **Aigreentick** 
 
 ## Core Purpose
 
-- Accept media file uploads from clients via REST API
+- Accept media file uploads from clients via REST API — both **single-file** and **batch** modes
 - Store files either on the **local filesystem** or **Amazon S3** (switchable via config)
 - Optionally push uploaded media to **WhatsApp/Facebook** and store the returned `media_id`
 - Track all media metadata in a **MySQL** database
@@ -85,22 +85,41 @@ The **Organisation Service** calls an internal API on the Storage Service to set
 
 These are **idempotent upserts**. The Organisation Service sets the limits; the Storage Service owns and enforces them after that. This is a rare admin-level operation, not on the upload hot path.
 
-#### How Quota is Enforced on Upload
+#### Quota Reservation — Two Strategies
 
-Both org-level and project-level limits are checked and updated **within a single database transaction** alongside the media insert:
+The service supports **two quota reservation strategies**, each suited to different upload paths:
+
+**Strategy A: Pessimistic Locking (Single-File Uploads via `QuotaService`)**
+
+Used by `MediaUploadOrchestrator` for single-file user-facing uploads. Runs within the caller's transaction (`Propagation.MANDATORY`):
 
 1. `SELECT FOR UPDATE` on `project_storage` row for (org_id, project_id)
 2. Check `project.used_bytes + file_size <= project.max_bytes` — reject if project is full
 3. `SELECT FOR UPDATE` on `org_storage` row for (org_id)
 4. Check `org.used_bytes + file_size <= org.max_bytes` — reject if org is full
-5. Store file to provider, insert media row
-6. Increment `project_storage.used_bytes += file_size`
-7. Increment `org_storage.used_bytes += file_size`
-8. Commit transaction
+5. Increment both counters
+6. Commit with media insert in the same transaction
 
-If anything fails, everything rolls back — media row, usage counters, all consistent.
+Lock ordering is always **project first, then org** to prevent deadlocks.
 
-Lock ordering is always **project first, then org** to prevent deadlocks. Concurrent uploads to different projects under the same org only briefly contend at the org row.
+**Strategy B: Atomic SQL UPDATEs (Batch Uploads via `OptimisticQuotaService`)**
+
+Used by `BatchMediaUploadService` and `ConcurrentMediaUploadService`. Reserves quota using single atomic UPDATE statements with capacity check in the WHERE clause:
+
+```sql
+UPDATE project_storage
+SET used_bytes = used_bytes + :size
+WHERE org_id = :orgId AND project_id = :projectId
+  AND used_bytes + :size <= max_bytes
+```
+
+- If the UPDATE affects 0 rows → quota exceeded (or row not found)
+- No `@Version` needed — the UPDATE is inherently atomic
+- No `@Retryable` needed — no optimistic lock failures possible
+- Runs in `REQUIRES_NEW` transaction so it commits independently
+- For batch uploads, **one reservation** covers the aggregate size of all files
+
+If the project-level reservation succeeds but the org-level reservation fails, the method immediately decrements the project row to maintain consistency.
 
 #### On Delete
 
@@ -132,27 +151,87 @@ This ensures org-level usage is always derivable from project-level usage, and p
 
 The local quota table approach eliminates all remote calls from the upload path, keeps consistency within a single DB transaction, handles high volume gracefully, and self-heals via nightly reconciliation.
 
-### 6. Rate Limiting
+### 6. Batch Media Upload
+
+The service supports uploading multiple files in a single HTTP request via `POST /api/v1/media/upload/batch`. This was introduced to solve severe performance bottlenecks during Facebook template sync, where 12+ individual uploads caused optimistic lock contention, exponential backoff retries, and ~25-second sync times.
+
+#### How Batch Upload Works
+
+```
+Client → POST /api/v1/media/upload/batch (multipart, multiple files)
+        ↓
+  Validate aggregate constraints (max file count, max total size)
+        ↓
+  Validate each file individually (size, MIME type, filename)
+  Collect valid files + rejected files with reasons
+        ↓
+  Calculate TOTAL size of all valid files
+        ↓
+  ONE atomic quota reservation for the aggregate size
+  Single UPDATE on project_storage, single UPDATE on org_storage
+        ↓
+  Convert all valid MultipartFiles to temp files
+        ↓
+  Save all files to storage provider IN PARALLEL
+  Uses internal thread pool — no external contention
+        ↓
+  Batch insert all Media entities (single saveAll())
+        ↓
+  Release quota for any files that failed during storage
+        ↓
+  Cleanup all temp files
+        ↓
+  Return BatchMediaUploadResponse (per-file success/failure details)
+```
+
+#### Key Design Points
+
+- **One quota transaction** for the entire batch — not per file
+- **Parallel file I/O** internally via `CompletableFuture` on a dedicated thread pool
+- **Single `saveAll()`** for all Media entities — collapses N individual inserts into 1 batch
+- **Partial failure support** — if some files fail mid-batch, successful files are kept, failed files are reported, and quota is adjusted for the failed bytes only
+- **All-or-nothing for quota** — if aggregate quota is insufficient, the entire batch is rejected upfront before any file processing begins
+
+#### Batch Configuration
+
+| Property | Default | Purpose |
+|---|---|---|
+| `media.service.batch-max-files` | `20` | Max files per batch request |
+| `media.service.batch-max-total-size` | `104857600` (100 MB) | Max aggregate size per batch |
+| `media.service.batch-parallel-threads` | `10` | Internal parallelism for file storage |
+
+#### Performance Impact
+
+| Metric | Before (12 files) | After (12 files) |
+|---|---|---|
+| HTTP calls from template service | 12 | 1 |
+| Quota transactions | 12 (with retries: ~30+) | 1 |
+| Database inserts | 12 individual | 1 batch |
+| Optimistic lock failures | 5-8 per sync | 0 |
+| DB connections during sync | 12 concurrent | 1 |
+
+### 7. Rate Limiting
 - Per org+project (or per-IP fallback) rate limiting using **Bucket4j** (token bucket algorithm)
 - Configurable limits per endpoint (upload vs. read), applied via `RateLimitInterceptor`
 
-### 7. Resilience (Circuit Breaker + Retry)
+### 8. Resilience (Circuit Breaker + Retry)
 - All external service calls (WhatsApp, Organisation Service) are wrapped with **Resilience4j** circuit breaker, retry, and rate limiter
 - Fallback methods prevent cascading failures
 
-### 8. Redis Caching
+### 9. Redis Caching
 - Media lookups and storage info are cached in **Redis** with configurable TTLs
 - Cache regions: `media` (1 hr), `storageInfo` (5 min), `userMediaList` (10 min)
 
-### 9. Cleanup
+### 10. Cleanup
 - Media cleanup is triggered explicitly by `organisationId` or `projectId`
 - Deleting a project removes all its media from both storage provider and database, and decrements the corresponding quota counters
 - Deleting an organisation removes all media across all its projects and cascades quota deletion via FK
 
-### 10. Validation
+### 11. Validation
 - File size, MIME type, and filename are validated before upload
 - Configurable allowed types per media category (image/video/audio/document)
 - Path traversal protection on filenames
+- Batch uploads validate each file individually and report per-file rejection reasons without blocking valid files
 
 ---
 
@@ -191,7 +270,8 @@ Base path: `/api/v1/media`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/upload` | Upload a media file |
+| POST | `/upload` | Upload a single media file |
+| POST | `/upload/batch` | Upload multiple media files in one request |
 | GET | `/` | Get all media for current org+project (paginated) |
 | GET | `/images` | Get images only |
 | GET | `/videos` | Get videos only |
@@ -205,6 +285,8 @@ Internal API (called by Organisation Service):
 |---|---|---|
 | PUT | `/internal/quota/org` | Create or update org-level storage limit |
 | PUT | `/internal/quota/project` | Create or update project-level storage limit |
+| GET | `/internal/quota/org/{orgId}` | Get org quota info |
+| GET | `/internal/quota/project/{orgId}/{projectId}` | Get project quota info |
 
 Swagger UI: `http://localhost:7998/swagger-ui.html`
 
@@ -216,14 +298,16 @@ Swagger UI: `http://localhost:7998/swagger-ui.html`
 |---|---|
 | `database` | MySQL datasource config |
 | `redis` | Redis connection and cache settings |
-| `media` | Upload size limits, allowed MIME types, paths |
+| `media` | Upload size limits, allowed MIME types, paths, batch config |
 | `storage` | Storage provider selection and provider-specific config |
 | `eureka` | Service discovery and external service URLs |
 | `resilience` | Circuit breaker, retry, and rate limiter tuning |
 
 ---
 
-## Upload Flow
+## Upload Flows
+
+### Single-File Upload
 
 ```
 Client → POST /api/v1/media/upload
@@ -253,6 +337,37 @@ Client → POST /api/v1/media/upload
   COMMIT TRANSACTION
         ↓
   Return MediaUploadResponse (url, mediaId, metadata)
+```
+
+### Batch Upload
+
+```
+Client → POST /api/v1/media/upload/batch (multiple files)
+        ↓
+  Extract context: orgId, projectId (from X-Org-Id, X-Project-Id headers)
+        ↓
+  Validate aggregate constraints (file count ≤ 20, total size ≤ 100MB)
+        ↓
+  Validate each file individually
+  Collect valid files + rejected files (with reasons)
+        ↓
+  Calculate total size of valid files
+        ↓
+  Atomic quota reservation (single UPDATE per table, no locks)
+  UPDATE project_storage SET used_bytes += totalSize WHERE ... AND capacity check
+  UPDATE org_storage     SET used_bytes += totalSize WHERE ... AND capacity check
+        ↓
+  Convert all valid files to temp files
+        ↓
+  Save all files to storage IN PARALLEL (internal thread pool)
+        ↓
+  Batch insert all Media entities (single saveAll())
+        ↓
+  Release quota for any files that failed during storage
+        ↓
+  Cleanup temp files
+        ↓
+  Return BatchMediaUploadResponse (per-file success/failure, counts)
 ```
 
 ---

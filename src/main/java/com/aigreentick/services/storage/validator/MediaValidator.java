@@ -9,6 +9,9 @@ import org.springframework.web.multipart.MultipartFile;
 import com.aigreentick.services.storage.config.properties.MediaProperties;
 import com.aigreentick.services.storage.enums.MediaType;
 import com.aigreentick.services.storage.exception.InvalidMediaException;
+import com.aigreentick.services.storage.dto.response.BatchFileResult;
+import com.aigreentick.services.storage.dto.response.BatchValidationResult;
+import java.util.ArrayList;
 
 import lombok.RequiredArgsConstructor;
 
@@ -123,6 +126,34 @@ public class MediaValidator {
             return MediaType.DOCUMENT;
 
         throw new IllegalArgumentException("Unsupported media type for WhatsApp: " + mime);
+    }
+
+    /**
+     * Validates a batch of files. Does NOT throw on individual failures —
+     * collects valid files and rejected results separately.
+     */
+    public BatchValidationResult validateBatch(List<MultipartFile> files) {
+        List<MultipartFile> validFiles = new ArrayList<>();
+        List<BatchFileResult> rejectedResults = new ArrayList<>();
+        long totalValidSize = 0;
+
+        for (MultipartFile file : files) {
+            String filename = file.getOriginalFilename();
+            try {
+                validateFile(file);
+                validFiles.add(file);
+                totalValidSize += file.getSize();
+            } catch (Exception ex) {
+                rejectedResults.add(BatchFileResult.failed(
+                        filename != null ? filename : "unknown", ex.getMessage()));
+            }
+        }
+
+        return BatchValidationResult.builder()
+                .validFiles(validFiles)
+                .rejectedResults(rejectedResults)
+                .totalValidSize(totalValidSize)
+                .build();
     }
 
 }

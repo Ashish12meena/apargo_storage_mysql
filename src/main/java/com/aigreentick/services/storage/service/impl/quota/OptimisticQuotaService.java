@@ -27,80 +27,132 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class OptimisticQuotaService {
 
-    private final ProjectStorageRepository projectStorageRepo;
-    private final OrgStorageRepository orgStorageRepo;
+        private final ProjectStorageRepository projectStorageRepo;
+        private final OrgStorageRepository orgStorageRepo;
 
-    /**
-     * Reserve quota using optimistic locking.
-     * On version conflict, Spring Retry retries with exponential backoff + jitter.
-     */
-    @Retryable(
-            retryFor = ObjectOptimisticLockingFailureException.class,
-            maxAttempts = 5,
-            backoff = @Backoff(delay = 50, multiplier = 2, random = true)
-    )
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void reserveQuota(Long orgId, Long projectId, long fileSize) {
-        // 1. Read project row (plain SELECT — no lock)
-        ProjectStorage project = projectStorageRepo.findByOrgAndProject(orgId, projectId)
-                .orElseThrow(() -> new MediaValidationException(
-                        String.format("Storage quota not provisioned for org=%d project=%d. " +
-                                      "Ask your admin to provision quota first.", orgId, projectId)));
+        /**
+         * Reserve quota using optimistic locking.
+         * On version conflict, Spring Retry retries with exponential backoff + jitter.
+         */
+        @Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 5, backoff = @Backoff(delay = 50, multiplier = 2, random = true))
+        @Transactional(propagation = Propagation.REQUIRES_NEW)
+        public void reserveQuota(Long orgId, Long projectId, long fileSize) {
+                // 1. Read project row (plain SELECT — no lock)
+                ProjectStorage project = projectStorageRepo.findByOrgAndProject(orgId, projectId)
+                                .orElseThrow(() -> new MediaValidationException(
+                                                String.format("Storage quota not provisioned for org=%d project=%d. " +
+                                                                "Ask your admin to provision quota first.", orgId,
+                                                                projectId)));
 
-        if (!project.hasCapacity(fileSize)) {
-            throw new StorageLimitExceededException(
-                    String.format("Project storage quota exceeded. Available: %d bytes, required: %d bytes",
-                            project.getRemainingBytes(), fileSize));
+                if (!project.hasCapacity(fileSize)) {
+                        throw new StorageLimitExceededException(
+                                        String.format("Project storage quota exceeded. Available: %d bytes, required: %d bytes",
+                                                        project.getRemainingBytes(), fileSize));
+                }
+
+                // 2. Read org row (plain SELECT — no lock)
+                OrgStorage org = orgStorageRepo.findByOrgId(orgId)
+                                .orElseThrow(() -> new MediaValidationException(
+                                                String.format("Organisation storage quota not provisioned for org=%d",
+                                                                orgId)));
+
+                if (!org.hasCapacity(fileSize)) {
+                        throw new StorageLimitExceededException(
+                                        String.format("Organisation storage quota exceeded. Available: %d bytes, required: %d bytes",
+                                                        org.getRemainingBytes(), fileSize));
+                }
+
+                // 3. Increment — on flush, @Version triggers optimistic lock check.
+                // If another thread committed first, ObjectOptimisticLockingFailureException
+                // is thrown and @Retryable re-reads + retries.
+                project.incrementUsage(fileSize);
+                org.incrementUsage(fileSize);
+
+                projectStorageRepo.save(project);
+                orgStorageRepo.save(org);
+
+                log.debug("Quota reserved (optimistic): org={} project={} fileSize={} | orgUsed={}/{} projUsed={}/{}",
+                                orgId, projectId, fileSize,
+                                org.getUsedBytes(), org.getMaxBytes(),
+                                project.getUsedBytes(), project.getMaxBytes());
         }
 
-        // 2. Read org row (plain SELECT — no lock)
-        OrgStorage org = orgStorageRepo.findByOrgId(orgId)
-                .orElseThrow(() -> new MediaValidationException(
-                        String.format("Organisation storage quota not provisioned for org=%d", orgId)));
+        /**
+         * Release quota — also uses optimistic locking with retry.
+         */
+        @Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 5, backoff = @Backoff(delay = 50, multiplier = 2, random = true))
+        @Transactional(propagation = Propagation.REQUIRES_NEW)
+        public void releaseQuota(Long orgId, Long projectId, long fileSize) {
+                projectStorageRepo.findByOrgAndProject(orgId, projectId)
+                                .ifPresent(p -> {
+                                        p.decrementUsage(fileSize);
+                                        projectStorageRepo.save(p);
+                                });
 
-        if (!org.hasCapacity(fileSize)) {
-            throw new StorageLimitExceededException(
-                    String.format("Organisation storage quota exceeded. Available: %d bytes, required: %d bytes",
-                            org.getRemainingBytes(), fileSize));
+                orgStorageRepo.findByOrgId(orgId)
+                                .ifPresent(o -> {
+                                        o.decrementUsage(fileSize);
+                                        orgStorageRepo.save(o);
+                                });
+
+                log.debug("Quota released (optimistic): org={} project={} fileSize={}", orgId, projectId, fileSize);
         }
 
-        // 3. Increment — on flush, @Version triggers optimistic lock check.
-        //    If another thread committed first, ObjectOptimisticLockingFailureException
-        //    is thrown and @Retryable re-reads + retries.
-        project.incrementUsage(fileSize);
-        org.incrementUsage(fileSize);
+        // ── Atomic Batch Quota (no optimistic lock needed) ──────────────────────
 
-        projectStorageRepo.save(project);
-        orgStorageRepo.save(org);
+        /**
+         * Reserve quota atomically using single UPDATE statements.
+         * No @Version / @Retryable needed — the WHERE clause ensures atomicity.
+         *
+         * @throws StorageLimitExceededException if either project or org quota is
+         *                                       exceeded
+         * @throws MediaValidationException      if quota rows don't exist
+         */
+        @Transactional(propagation = Propagation.REQUIRES_NEW)
+        public void reserveQuotaAtomic(Long orgId, Long projectId, long totalSize) {
+                // 1. Atomic project-level reservation
+                int projUpdated = projectStorageRepo.incrementUsage(orgId, projectId, totalSize);
+                if (projUpdated == 0) {
+                        // Could be: row doesn't exist OR quota exceeded
+                        boolean exists = projectStorageRepo.findByOrgAndProject(orgId, projectId).isPresent();
+                        if (!exists) {
+                                throw new MediaValidationException(
+                                                String.format("Storage quota not provisioned for org=%d project=%d. " +
+                                                                "Ask your admin to provision quota first.", orgId,
+                                                                projectId));
+                        }
+                        throw new StorageLimitExceededException(
+                                        String.format("Project storage quota exceeded for org=%d project=%d. " +
+                                                        "Required: %d bytes", orgId, projectId, totalSize));
+                }
 
-        log.debug("Quota reserved (optimistic): org={} project={} fileSize={} | orgUsed={}/{} projUsed={}/{}",
-                orgId, projectId, fileSize,
-                org.getUsedBytes(), org.getMaxBytes(),
-                project.getUsedBytes(), project.getMaxBytes());
-    }
+                // 2. Atomic org-level reservation
+                int orgUpdated = orgStorageRepo.incrementUsage(orgId, totalSize);
+                if (orgUpdated == 0) {
+                        // Rollback the project increment we just did
+                        projectStorageRepo.decrementUsage(orgId, projectId, totalSize);
 
-    /**
-     * Release quota — also uses optimistic locking with retry.
-     */
-    @Retryable(
-            retryFor = ObjectOptimisticLockingFailureException.class,
-            maxAttempts = 5,
-            backoff = @Backoff(delay = 50, multiplier = 2, random = true)
-    )
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void releaseQuota(Long orgId, Long projectId, long fileSize) {
-        projectStorageRepo.findByOrgAndProject(orgId, projectId)
-                .ifPresent(p -> {
-                    p.decrementUsage(fileSize);
-                    projectStorageRepo.save(p);
-                });
+                        boolean exists = orgStorageRepo.findByOrgId(orgId).isPresent();
+                        if (!exists) {
+                                throw new MediaValidationException(
+                                                String.format("Organisation storage quota not provisioned for org=%d",
+                                                                orgId));
+                        }
+                        throw new StorageLimitExceededException(
+                                        String.format("Organisation storage quota exceeded for org=%d. " +
+                                                        "Required: %d bytes", orgId, totalSize));
+                }
 
-        orgStorageRepo.findByOrgId(orgId)
-                .ifPresent(o -> {
-                    o.decrementUsage(fileSize);
-                    orgStorageRepo.save(o);
-                });
+                log.debug("Quota reserved (atomic): org={} project={} totalSize={}", orgId, projectId, totalSize);
+        }
 
-        log.debug("Quota released (optimistic): org={} project={} fileSize={}", orgId, projectId, fileSize);
-    }
+        /**
+         * Release quota atomically.
+         */
+        @Transactional(propagation = Propagation.REQUIRES_NEW)
+        public void releaseQuotaAtomic(Long orgId, Long projectId, long totalSize) {
+                projectStorageRepo.decrementUsage(orgId, projectId, totalSize);
+                orgStorageRepo.decrementUsage(orgId, totalSize);
+                log.debug("Quota released (atomic): org={} project={} totalSize={}", orgId, projectId, totalSize);
+        }
 }
