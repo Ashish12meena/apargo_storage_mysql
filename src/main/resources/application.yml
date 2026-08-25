@@ -1,0 +1,448 @@
+spring:
+  application:
+    name: storage-service
+
+
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  
+
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/apargo_storage}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:meenagaming12@#}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:30}
+      minimum-idle: ${DB_POOL_MIN_IDLE:10}
+      connection-timeout: 3000      # fail fast; do not queue behind an exhausted pool
+      max-lifetime: 1500000         # 25 min, under any proxy or MySQL idle timeout
+      leak-detection-threshold: 30000
+      pool-name: storage-hikari
+
+  jpa:
+    open-in-view: false             # a request-scoped session hides N+1 and holds connections
+    hibernate:
+      # DEVELOPMENT DEFAULT. Hibernate generates the schema from the entities, so
+      # there is nothing to run by hand and no migration to write while the model
+      # is still moving.
+      #
+      # The prod profile overrides this to `validate` and turns Flyway back on.
+      # `update` is additive-only and best-effort — it will add a column but never
+      # drop one, rename one, change a type, or backfill data — so it is safe only
+      # while the database holds nothing anyone would miss.
+      ddl-auto: ${DDL_AUTO:update}
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+
+  flyway:
+    # OFF during development. The migrations in db/migration are kept and stay
+    # current; they are what production uses. See docs/06-database-design.md §1.
+    enabled: ${FLYWAY_ENABLED:false}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:146.88.24.113}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2000
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+
+  servlet:
+    multipart:
+      enabled: true
+      # Must sit at or above media.validation.max-bytes, or Tomcat rejects the
+      # upload before the service can produce a useful error.
+      #
+      # UNCHANGED by batch upload: a batch changes nothing about what a single
+      # file may be.
+      max-file-size: ${MULTIPART_MAX_FILE_SIZE:20MB}
+      # Raised for batch upload. The container rejects an oversized request
+      # BEFORE any application code runs, so a request over this limit produces a
+      # raw container error rather than the service's envelope.
+      #
+      # Deliberately inconsistent, and do not "fix" it: 20 files (the batch
+      # maximum) x 20MB (the per-file maximum) is 400MB, far above this cap. That
+      # is intended. The request cap protects the service; it is NOT a promise
+      # that every permitted batch fits. A caller sending twenty maximum-size
+      # videos gets a payload-too-large error and should split the batch.
+      max-request-size: ${MULTIPART_MAX_REQUEST_SIZE:100MB}
+      # Buffer small parts in memory. Anything larger belongs on the direct-upload
+      # path, not spooled to disk (ADR-004).
+      file-size-threshold: 1MB
+
+  threads:
+    virtual:
+      enabled: false
+
+server:
+  port: ${SERVER_PORT:8030}
+  shutdown: graceful                # in-flight uploads drain on deploy
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+    max-swallow-size: -1
+  error:
+    include-stacktrace: never
+    include-message: never
+
+storage:
+  active-provider: ${STORAGE_PROVIDER:local}
+  # Maximum files in one POST /media/upload/batch. Bounds how long a single
+  # servlet thread can be held, since the batch is processed sequentially.
+  max-files-per-batch: ${MAX_FILES_PER_BATCH:20}
+  local:
+    root-path: ${LOCAL_STORAGE_ROOT:./media-uploads}
+    base-url: ${LOCAL_STORAGE_BASE_URL:http://localhost:8030/api/v1/media/serve}
+  s3:
+    bucket: ${S3_BUCKET:}
+    region: ${S3_REGION:ap-south-1}
+    endpoint: ${S3_ENDPOINT:}
+    cloudfront-domain: ${CLOUDFRONT_DOMAIN:}
+    kms-key-id: ${S3_KMS_KEY_ID:}
+    storage-class: ${S3_STORAGE_CLASS:INTELLIGENT_TIERING}
+    multipart-threshold-bytes: 104857600   # 100 MB
+    part-size-bytes: 16777216              # 16 MB
+    presign-expiry-minutes: 15
+    path-style-access: true
+  # Direct client-to-storage upload. OFF: at ~16 MB the proxied path is a single
+  # round trip and the three-call protocol earns nothing. Kept wired so raising a
+  # limit for one tenant stays a YAML flip rather than a re-architecture.
+  presigned-upload:
+    enabled: ${PRESIGNED_UPLOAD_ENABLED:false}
+    threshold-bytes: ${PRESIGNED_UPLOAD_THRESHOLD_BYTES:33554432}   # 32 MB
+  orphan-scan-cron: "0 30 3 * * *"
+  retention-cron: "0 0 4 * * *"
+
+media:
+  # ── Upload limits ──────────────────────────────────────────────────────────
+  # GLOBAL. Every organisation and project gets the same per-file ceiling and the
+  # same allowlist. Changing them is a YAML edit and a restart.
+  #
+  # Total storage CAPACITY is what varies per tenant, and it already has a home:
+  # project_storage.max_bytes in the database, set at runtime through
+  # /internal/quota/project. Per-file limits are deployment configuration; total
+  # capacity is tenant data. Keeping them apart is what stops onboarding a new
+  # tenant from requiring a deploy (ADR-012).
+  validation:
+    max-bytes: ${MEDIA_MAX_BYTES:16777216}          # 16 MB — WhatsApp media ceiling
+    inspection-header-bytes: 8192
+    reject-on-type-mismatch: true
+
+    # Optional per-type override. Absent types fall back to max-bytes, and a value
+    # above max-bytes is clamped down to it rather than raising the ceiling.
+    max-bytes-by-media-type:
+      IMAGE: ${MEDIA_MAX_BYTES_IMAGE:8388608}       # 8 MB
+      VIDEO: ${MEDIA_MAX_BYTES_VIDEO:16777216}      # 16 MB
+      AUDIO: ${MEDIA_MAX_BYTES_AUDIO:16777216}      # 16 MB
+      DOCUMENT: ${MEDIA_MAX_BYTES_DOCUMENT:16777216} # 16 MB
+
+    # THE single allowlist. 'image/jpg' is absent deliberately: it is not a real
+    # MIME type and is normalised to image/jpeg during inspection.
+    allowed-mime-types-by-media-type:
+      IMAGE:
+        - image/jpeg
+        - image/png
+        - image/webp
+      VIDEO:
+        - video/mp4
+        - video/3gpp
+      AUDIO:
+        - audio/mpeg
+        - audio/mp4
+        - audio/ogg
+        - audio/aac
+        - audio/amr
+      DOCUMENT:
+        - application/pdf
+        - text/plain
+        - application/msword
+        - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+        - application/vnd.ms-excel
+        - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+  # ── Malware scanning ───────────────────────────────────────────────────────
+  # Capability always wired, OFF by default. Enabling it later is this flag plus
+  # a scanner adapter: no schema change, no lifecycle change, no API change.
+  # Never runs in the request path — it consumes media.created via the outbox.
+  scanning:
+    enabled: ${MEDIA_SCANNING_ENABLED:false}
+    provider: ${MEDIA_SCANNING_PROVIDER:noop}    # noop | clamav
+    endpoint: ${MEDIA_SCANNING_ENDPOINT:}
+    timeout: PT30S
+    max-scan-bytes: 104857600
+    # When true a file is unreadable until it returns CLEAN. Stricter, but it
+    # makes scan latency visible to every reader, so it is a deployment policy.
+    block-download-until-scanned: ${MEDIA_SCANNING_BLOCK_DOWNLOAD:false}
+
+quota:
+  upload-session-ttl: PT30M
+  delete-grace-period: P7D
+  alert-threshold-percents: [80, 95]
+  reconciliation-enabled: true
+  # A project limit may never exceed the org total (enforced always).
+  # This controls the weaker rule: whether project limits may SUM to more
+  # than the org total. True = allowances are caps; false = guarantees.
+  allow-project-overcommit: ${QUOTA_ALLOW_PROJECT_OVERCOMMIT:true}
+  # Rows marked per tenant-teardown pass. Larger finishes sooner but holds locks
+  # longer; smaller interleaves better with live traffic.
+  teardown-batch-size: ${QUOTA_TEARDOWN_BATCH_SIZE:500}
+  reconciliation-cron: "0 0 3 * * *"
+  sweep-interval-ms: 300000
+  purge-interval-ms: 600000
+
+# Scheduling. The pool must exceed the number of long-running jobs, or a slow
+# nightly pass blocks the 1-second outbox poll. Set enabled=false to run a
+# web-only replica set with maintenance on a dedicated deployment.
+scheduling:
+  enabled: ${SCHEDULING_ENABLED:true}
+  pool-size: ${SCHEDULING_POOL_SIZE:4}
+
+outbox:
+  enabled: true
+  batch-size: 100
+  max-attempts: 10
+  base-backoff: PT2S
+  max-backoff: PT5M
+  lag-alert-threshold: PT5M
+  retention-after-dispatch: P7D
+  poll-interval-ms: 1000
+
+security:
+  api-key-enabled: ${SECURITY_API_KEY_ENABLED:false}
+  api-key-header: X-Api-Key
+
+  clients:
+    - id: template-service
+      key: ${TEMPLATE_SERVICE_API_KEY:f455bef899df21b059349ad8a0ca213e9918bfa82735ac80}
+      scopes: [media:read, media:write, media:delete]
+    - id: chat-service
+      key: ${CHAT_SERVICE_API_KEY:5f4bdca283a527b4d72bd8d09c69c02663f21ac5297d1f50}
+      scopes: [media:read, media:write, media:delete]
+    - id: org-service
+      key: ${ORG_SERVICE_API_KEY:0af44b2d352e08e03a41a808c2eccbf1c4823eaae1ccf08a}
+      scopes: [quota:admin, quota:read, tenant:teardown]
+
+
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
+  allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+  allowed-headers: ["*"]
+  exposed-headers: [X-Trace-Id, X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After]
+  allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
+  max-age-seconds: 3600
+
+rate-limit:
+  enabled: true
+  fail-open: true          # availability over enforcement (ADR-007)
+  rules:
+    upload-per-user:    { capacity: 60,   refill-tokens: 60,   refill-period: PT1M }
+    upload-per-project: { capacity: 300,  refill-tokens: 300,  refill-period: PT1M }
+    read-per-project:   { capacity: 1000, refill-tokens: 1000, refill-period: PT1M }
+    # New: the predecessor's limiter recognised only /upload and /media/{id}, so
+    # the one route streaming unbounded bytes fell to a shared default bucket.
+    serve-per-project:  { capacity: 500,  refill-tokens: 500,  refill-period: PT1M }
+    anonymous-per-ip:   { capacity: 20,   refill-tokens: 20,   refill-period: PT1M }
+  bandwidth-bytes-per-minute:
+    upload-per-org: 5368709120
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+      group:
+        # Liveness: is the JVM alive. A storage outage must not restart the pod
+        # into the same failure.
+        liveness:
+          include: livenessState
+        # Readiness: can this pod serve. Redis is excluded deliberately — rate
+        # limiting fails open, so a Redis outage must not empty the fleet.
+        readiness:
+          include: readinessState,db,storage
+  metrics:
+    tags:
+      application: storage-service
+  tracing:
+    sampling:
+      probability: ${TRACE_SAMPLE_RATE:0.1}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LOGGING
+#
+# Everything about logging is controlled from here. No profile sets
+# `logging.config`, so no XML file owns any part of this — which is deliberate.
+# The moment one does, Logback takes over completely and EVERY `logging.*`
+# property below is silently ignored, including the levels. That is exactly
+# what the prod profile used to do via `logging.config: classpath:logback-prod.xml`;
+# JSON output there is now `logging.structured.format.console` instead.
+#
+# `src/main/resources/logback-prod.xml` is consequently dead. It is not named
+# `logback.xml` or `logback-spring.xml`, so Boot does not auto-detect it and
+# nothing references it — it is safe to delete. Do not re-point `logging.config`
+# at it without also moving these settings.
+#
+# Every logger in the service is declared by Lombok's @Slf4j, so a logger's name
+# is always the class it sits in. That is what makes the `level:` map below
+# actually work — you can silence or open up any package, and it applies to
+# exactly the classes in it.
+#
+# ── Turning things up when something is wrong ──────────────────────────────
+#   LOG_LEVEL=DEBUG                    every class in the service
+#   LOG_LEVEL_API=DEBUG                controllers, filters, error handling
+#   LOG_LEVEL_STORAGE=DEBUG            S3 / local filesystem adapters
+#   LOG_REQUEST_START=true             a line on arrival, not just completion
+#   LOG_REQUEST_HEADERS=true           allowlisted request headers
+#   LOG_SQL=DEBUG                      Hibernate's generated statements
+#
+# ── Never logged, at any level ─────────────────────────────────────────────
+# API keys, Authorization values, presigned URLs (the query string carries the
+# signature), storage keys, and request or response bodies. The access-log
+# filter does not read them; header capture is allowlist-only and credential
+# headers are rejected under the allowlist.
+# ═══════════════════════════════════════════════════════════════════════════
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+
+    # The service itself. One knob for everything, then narrower knobs for the
+    # layer you are actually debugging — so you can open up the storage adapter
+    # without also getting every rate-limit decision.
+    com.aigreentick.services.storage: ${LOG_LEVEL:INFO}
+    com.aigreentick.services.storage.api: ${LOG_LEVEL_API:INFO}
+    com.aigreentick.services.storage.application: ${LOG_LEVEL_APPLICATION:INFO}
+    com.aigreentick.services.storage.infrastructure.storage: ${LOG_LEVEL_STORAGE:INFO}
+    com.aigreentick.services.storage.infrastructure.outbox: ${LOG_LEVEL_OUTBOX:INFO}
+    com.aigreentick.services.storage.infrastructure.ratelimit: ${LOG_LEVEL_RATELIMIT:INFO}
+    com.aigreentick.services.storage.infrastructure.scheduler: ${LOG_LEVEL_SCHEDULER:INFO}
+
+    # The access log is its own logger, so request lines can be turned down
+    # independently of everything else the service says.
+    com.aigreentick.services.storage.infrastructure.observability.RequestLoggingFilter: ${LOG_LEVEL_ACCESS:INFO}
+
+    # ── Third-party noise ──────────────────────────────────────────────────
+    # WARN, not INFO. The AWS SDK in particular logs per-request detail at
+    # DEBUG that includes signed URLs.
+    org.hibernate.SQL: ${LOG_SQL:WARN}
+    org.hibernate.orm.jdbc.bind: WARN          # DEBUG here prints bound parameters
+    org.hibernate.stat: WARN
+    software.amazon.awssdk: WARN
+    io.lettuce.core: WARN
+    org.apache.tika: WARN
+    org.springframework.web: INFO
+    org.springframework.jdbc.datasource.init: INFO
+    com.zaxxer.hikari: ${LOG_LEVEL_HIKARI:INFO}
+
+  # Named groups, so `logging.level.<group>` sets several loggers at once. Set
+  # LOG_LEVEL_SQL_DEBUG=DEBUG to get statements AND their bound parameters,
+  # which individually are two settings people routinely half-apply and then
+  # wonder why every parameter prints as '?'.
+  group:
+    sql: org.hibernate.SQL,org.hibernate.orm.jdbc.bind
+    storage-io: com.aigreentick.services.storage.infrastructure.storage,software.amazon.awssdk
+    request-flow: com.aigreentick.services.storage.api.security,com.aigreentick.services.storage.infrastructure.observability,com.aigreentick.services.storage.infrastructure.ratelimit
+
+  # ── Correlation ───────────────────────────────────────────────────────────
+  # Injected into Spring Boot's default console and file patterns, so EVERY
+  # line — including Hibernate's and Tomcat's — carries the ids. This is what
+  # makes a trace id from an error response greppable across the whole log.
+  #
+  # The `:-` defaults matter: a scheduled job has no request, and without them
+  # every background line would read `%X{traceId}` literally.
+  pattern:
+    correlation: "[trace=%X{traceId:-} req=%X{requestId:-} org=%X{orgId:-} proj=%X{projectId:-}] "
+    # Milliseconds, not the default seconds: request durations here are often
+    # single-digit milliseconds and a second-resolution timestamp cannot order
+    # them.
+    dateformat: "yyyy-MM-dd HH:mm:ss.SSS"
+
+  # ── File output ───────────────────────────────────────────────────────────
+  # OFF by default: containers log to stdout and a collector ships it, and a
+  # file inside a container is a file nobody reads and nobody rotates. Set
+  # LOG_FILE to a path to enable it; the rolling policy below then applies.
+  file:
+    name: ${LOG_FILE:}
+  logback:
+    rollingpolicy:
+      file-name-pattern: ${LOG_FILE:}.%d{yyyy-MM-dd}.%i.gz
+      max-file-size: ${LOG_FILE_MAX_SIZE:100MB}
+      max-history: ${LOG_FILE_MAX_HISTORY:14}
+      total-size-cap: ${LOG_FILE_TOTAL_CAP:3GB}
+
+  # ── The access log ────────────────────────────────────────────────────────
+  # One line per request: method, path, status, duration. Bound to
+  # RequestLoggingProperties; see that record for what each field costs.
+  #
+  # Sample output:
+  #   <-- POST /api/v1/media/upload 201 143ms ip=10.0.3.14
+  #   <-- GET /api/v1/media?limit=50 429 2ms ip=10.0.3.14
+  request:
+    enabled: ${LOG_REQUEST_ENABLED:true}
+
+    # A second line when the request ARRIVES. Off, and at DEBUG even when on,
+    # so switching it needs two deliberate changes rather than one. Worth it
+    # when requests are hanging and you need to see what got in but never came
+    # back out.
+    log-start: ${LOG_REQUEST_START:false}
+    start-level: ${LOG_REQUEST_START_LEVEL:DEBUG}
+
+    # Level for a successful completion. 4xx logs a rung higher and 5xx logs at
+    # ERROR regardless — lowering this quietens routine traffic, never failures.
+    complete-level: ${LOG_REQUEST_LEVEL:INFO}
+
+    # A 2xx slower than this logs at WARN. PT0S disables the promotion. This is
+    # what surfaces a latency regression in the log without a dashboard; 2s is
+    # generous for everything except a large upload.
+    slow-threshold: ${LOG_REQUEST_SLOW_THRESHOLD:PT2S}
+
+    include-query: true
+    # Truncation cap. A keyset cursor is a long opaque blob, and without a
+    # ceiling any caller can pad a query parameter to write unbounded volume
+    # into log storage.
+    max-query-length: ${LOG_REQUEST_MAX_QUERY:256}
+
+    # The TCP peer address — behind a proxy this is the proxy. See
+    # TraceContextFilter for why X-Forwarded-For is not trusted.
+    include-client-ip: true
+
+    # Allowlist-only, and OFF. Credential headers are rejected beneath this
+    # list, so adding Authorization here does nothing.
+    include-headers: ${LOG_REQUEST_HEADERS:false}
+    headers:
+      - X-Request-Id
+      - X-Trace-Id
+      - Idempotency-Key
+      - Content-Type
+      - User-Agent
+
+    # Path prefixes that produce no access line. A liveness probe on a
+    # one-second interval is 86,400 lines a day describing nothing.
+    exclude-paths:
+      - /actuator
+      - /swagger-ui
+      - /v3/api-docs
+      - /favicon.ico

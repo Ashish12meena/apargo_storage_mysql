@@ -1,0 +1,1781 @@
+{
+  "info": {
+    "name": "Apargo Storage Service",
+    "_postman_id": "a7c3f1e2-8b4d-4c6a-9e1f-3d5b7a9c2e41",
+    "description": "**Apargo Storage Service** \u2014 media storage and quota control plane.\nSpring Boot 3.5.6 / Java 21. **18 endpoints, all implemented.**\n\n---\n\n## Setup\n\n1. `baseUrl` \u2014 default `http://localhost:7998`\n2. `apiKey` \u2014 a client key with media scopes\n3. `adminApiKey` \u2014 a client key with `quota:admin` + `tenant:teardown`\n4. **Run folder 1 first.** No upload succeeds before quota is provisioned.\n\nAuth is `X-Api-Key` + `X-Org-Id` / `X-Project-Id`. The key says *who is calling*;\nthe headers say *which tenant*, and are read only after the key validates.\n\nRunning locally with `SPRING_PROFILES_ACTIVE=local`, auth is **off**\n(`security.api-key-enabled: false`) \u2014 send just the tenant headers.\n\n## Notes\n\n- `Idempotency-Key` rotates per request. Pin `pinIdempotencyKey` to test replay.\n- `mediaId`, `uploadId`, `cursor`, `teardownHandle` are captured automatically.\n- Direct upload returns **501** until `storage.presigned-upload.enabled=true`.\n- **Folder 6 is negative tests \u2014 failing with the stated code IS the pass.**\n- Folder 5 is destructive. Check `orgId` before sending.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Fresh idempotency key per request unless deliberately pinned.",
+          "if (!pm.collectionVariables.get('pinIdempotencyKey')) {",
+          "    pm.collectionVariables.set('idempotencyKey',",
+          "        'pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Contract: every JSON response carries the envelope and a traceId.",
+          "pm.test('response envelope', function () {",
+          "    if (pm.response.code === 204 || !pm.response.text()) return;",
+          "    try {",
+          "        const b = pm.response.json();",
+          "        if (b && typeof b === 'object' && 'status' in b) {",
+          "            pm.expect(['SUCCESS','ERROR']).to.include(b.status);",
+          "            pm.expect(b).to.have.property('traceId');",
+          "        }",
+          "    } catch (e) { /* prometheus text, file stream, etc. */ }",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:7998",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "adminApiKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "orgId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "projectId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "mediaId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "uploadId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cursor",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "storageKey",
+      "value": "org-1/proj-1/image/REPLACE.png",
+      "type": "string"
+    },
+    {
+      "key": "otherTenantMediaId",
+      "value": "999999",
+      "type": "string"
+    },
+    {
+      "key": "teardownHandle",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "pinIdempotencyKey",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Setup \u2014 quota (run first)",
+      "item": [
+        {
+          "name": "1. Provision ORG quota",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/quota/org",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "quota",
+                "org"
+              ]
+            },
+            "description": "**Run this first.** A project quota cannot exist without its org row, and no upload succeeds without a project quota.\n\n10 GB org allowance.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orgId\": \"{{orgId}}\",\n  \"maxBytes\": 10737418240\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Provision PROJECT quota",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/quota/project",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "quota",
+                "project"
+              ]
+            },
+            "description": "5 GB project allowance inside the 10 GB org.\n\nRejected with 400 QUOTA_LIMIT_INVALID if it exceeds the org total \u2014 the hierarchy invariant is enforced at provisioning so a project never advertises space it cannot use.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orgId\": \"{{orgId}}\",\n  \"projectId\": \"{{projectId}}\",\n  \"maxBytes\": 5368709120\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. Read org quota",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/quota/org/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "quota",
+                "org",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Admin view of the org allowance."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. Read project quota",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/quota/project/{{orgId}}/{{projectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "quota",
+                "project",
+                "{{orgId}}",
+                "{{projectId}}"
+              ]
+            },
+            "description": "Admin view of the project allowance."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Upload",
+      "item": [
+        {
+          "name": "Upload file (proxied)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "upload"
+              ]
+            },
+            "description": "**Pick a file in the Body tab before sending.**\n\nStreams through the service to storage. Default limit 16 MB.\n\nCaptures `mediaId` for the rest of the collection.\n\nTo test retry safety: set the collection variable `pinIdempotencyKey` to any value, then send twice \u2014 you should get one file and one quota charge.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Any allowed type under 16 MB"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [201]', () => pm.expect([201]).to.include(pm.response.code));",
+                  "if (pm.response.code === 201) {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.collectionVariables.set('mediaId', d.id);",
+                  "    pm.test('detected content type returned', () => pm.expect(d.contentType).to.be.a('string'));",
+                  "    pm.test('no raw storage key leaked', () =>",
+                  "        pm.expect(JSON.stringify(d)).to.not.match(/org-\\\\d+\\\\/proj-\\\\d+\\\\//));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Initiate direct upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/uploads",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "uploads"
+              ]
+            },
+            "description": "Reserves quota, creates a PENDING record, returns presigned URL(s).\n\n**Disabled by default** (`storage.presigned-upload.enabled=false`) \u2014 at 16 MB the proxied path is a single round trip. Expect **501** unless you enable it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filename\": \"report.pdf\",\n  \"declaredContentType\": \"application/pdf\",\n  \"sizeBytes\": 8388608\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [201,501]', () => pm.expect([201,501]).to.include(pm.response.code));",
+                  "if (pm.response.code === 201) {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.collectionVariables.set('uploadId', d.uploadId);",
+                  "    pm.collectionVariables.set('mediaId', d.mediaId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Complete direct upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/uploads/{{uploadId}}/complete",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "uploads",
+                "{{uploadId}}",
+                "complete"
+              ]
+            },
+            "description": "Verifies the object landed, checks size, inspects the leading bytes, then activates.\n\nIdempotent \u2014 a repeat returns the same result. `parts` is multipart-only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"parts\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,404,409,501]', () => pm.expect([200,404,409,501]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Abort direct upload",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/uploads/{{uploadId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "uploads",
+                "{{uploadId}}"
+              ]
+            },
+            "description": "Releases quota and removes any partial object. Idempotent \u2014 always 204."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [204]', () => pm.expect([204]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Read",
+      "item": [
+        {
+          "name": "List media",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media?limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "type",
+                  "value": "IMAGE",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{cursor}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Keyset pagination. Pass `nextCursor` back as `cursor` to page.\n\n`type` filters by IMAGE | VIDEO | AUDIO | DOCUMENT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));",
+                  "if (pm.response.code === 200) {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.test('keyset shape, no COUNT(*)', () => {",
+                  "        pm.expect(d).to.have.property('items');",
+                  "        pm.expect(d).to.have.property('hasMore');",
+                  "        pm.expect(d).to.not.have.property('totalElements');",
+                  "    });",
+                  "    if (d.nextCursor) pm.collectionVariables.set('cursor', d.nextCursor);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get media by id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/{{mediaId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "{{mediaId}}"
+              ]
+            },
+            "description": "Single-resource metadata. Absent from the predecessor's API entirely."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,404]', () => pm.expect([200,404]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get download URL",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/{{mediaId}}/download-url?ttlSeconds=900",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "{{mediaId}}",
+                "download-url"
+              ],
+              "query": [
+                {
+                  "key": "ttlSeconds",
+                  "value": "900"
+                }
+              ]
+            },
+            "description": "Short-lived, tenant-scoped URL. The storage key is resolved server-side from the media id.\n\nReplaces the predecessor's `?storageKey=` endpoint, which accepted a client-supplied key with no ownership check."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,404]', () => pm.expect([200,404]).to.include(pm.response.code));",
+                  "if (pm.response.code === 200) {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.test('url returned', () => pm.expect(d.url).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Serve file (local/MinIO only)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Range",
+                "value": "bytes=0-1023",
+                "disabled": true
+              },
+              {
+                "key": "If-None-Match",
+                "value": "",
+                "disabled": true
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/serve/{{storageKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "serve",
+                "{{storageKey}}"
+              ]
+            },
+            "description": "**FROZEN ROUTE** \u2014 absolute URLs built from it are persisted downstream.\n\nSupports Range and If-None-Match. Responses are `private, max-age=300` and `Content-Disposition: attachment`.\n\nSet `storageKey` from a DB row to try it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,206,304,404]', () => pm.expect([200,206,304,404]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get own quota",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/quota",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "quota"
+              ]
+            },
+            "description": "Tenant self-service. The predecessor exposed quota only via the admin API, so tenants discovered the limit by hitting it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,400]', () => pm.expect([200,400]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Delete & Restore",
+      "item": [
+        {
+          "name": "Soft delete",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/{{mediaId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "{{mediaId}}"
+              ],
+              "query": [
+                {
+                  "key": "permanent",
+                  "value": "false",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Marks DELETED, releases quota immediately, sets `purge_after = now + 7 days`.\n\nIdempotent \u2014 deleting twice is 204, not 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [204]', () => pm.expect([204]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Restore",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/{{mediaId}}/restore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "{{mediaId}}",
+                "restore"
+              ]
+            },
+            "description": "DELETED \u2192 ACTIVE while `purge_after` is still in the future.\n\nRe-charges quota FIRST, so a restore fails rather than pushing the tenant over their limit."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,404,409,507]', () => pm.expect([200,404,409,507]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Permanent delete",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/{{mediaId}}?permanent=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "{{mediaId}}"
+              ],
+              "query": [
+                {
+                  "key": "permanent",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Sets `purge_after = now`, so the next purge scan removes the object \u2014 no grace period.\n\nRequires `media:delete:permanent`. For compliance erasure, not routine deletion."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [204,403]', () => pm.expect([204,403]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Batch delete",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/batch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "batch"
+              ]
+            },
+            "description": "Up to 100 ids. Returns **207** with per-item results \u2014 one bad id never fails the batch.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mediaIds\": [\n    \"{{mediaId}}\",\n    \"999999\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [207]', () => pm.expect([207]).to.include(pm.response.code));",
+                  "pm.test('per-item results', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Tenant teardown \u26a0\ufe0f",
+      "item": [
+        {
+          "name": "Teardown PROJECT",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/media/project/{{orgId}}/{{projectId}}?permanent=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "media",
+                "project",
+                "{{orgId}}",
+                "{{projectId}}"
+              ],
+              "query": [
+                {
+                  "key": "permanent",
+                  "value": "false"
+                }
+              ]
+            },
+            "description": "\u26a0\ufe0f **DESTRUCTIVE.** Removes every file in the project.\n\nAsynchronous \u2014 202 with a handle. Processed in batches of 500 through the outbox, so a crash resumes rather than restarting.\n\nRequires `tenant:teardown`, deliberately not implied by `media:delete`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [202]', () => pm.expect([202]).to.include(pm.response.code));",
+                  "if (pm.response.code === 202) {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.test('handle returned', () => pm.expect(d).to.have.property('handle'));",
+                  "    pm.collectionVariables.set('teardownHandle', d.handle);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Teardown ORGANISATION",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/media/org/{{orgId}}?permanent=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "media",
+                "org",
+                "{{orgId}}"
+              ],
+              "query": [
+                {
+                  "key": "permanent",
+                  "value": "false"
+                }
+              ]
+            },
+            "description": "\u26a0\ufe0f **HIGHEST BLAST RADIUS IN THE API.** Every file in every project of the org.\n\nQuota is recomputed once no live rows remain; the purge scan removes objects on its own schedule. There is no undo once `purge_after` elapses."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [202]', () => pm.expect([202]).to.include(pm.response.code));",
+                  "pm.test('scope ORG', () => pm.expect(pm.response.json().data.scope).to.eql('ORG'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Security (negative tests)",
+      "item": [
+        {
+          "name": "NEG: no API key",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media"
+              ]
+            },
+            "description": "Expect **401**. Rejected in a servlet filter, before the dispatcher \u2014 and before the tenant headers are even parsed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('traceId echoed', () => pm.expect(pm.response.json()).to.have.property('traceId'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: unknown API key",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "not-a-real-key-0000000000000000000"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media"
+              ]
+            },
+            "description": "Expect **401**. Keys are compared in constant time against every configured client."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: no tenant headers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media"
+              ]
+            },
+            "description": "Valid key, missing X-Org-Id. Expect **401** \u2014 the key says who is calling, not which tenant."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: cross-tenant read is 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/{{otherTenantMediaId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "{{otherTenantMediaId}}"
+              ]
+            },
+            "description": "A media id belonging to another tenant must return **404, never 403**.\n\n403 would confirm existence and make the endpoint an enumeration oracle."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 not 403', () => pm.response.to.have.status(404));",
+                  "pm.test('MEDIA_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('MEDIA_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: path traversal on serve",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/serve/../../../../etc/passwd",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "serve",
+                "..",
+                "..",
+                "..",
+                "..",
+                "etc",
+                "passwd"
+              ]
+            },
+            "description": "Expect 404/400. `StorageKey` rejects `..`, absolute paths, backslashes and null bytes; the local adapter re-checks containment independently."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not 200', () => pm.expect(pm.response.code).to.not.eql(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: content-type mismatch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "upload"
+              ]
+            },
+            "description": "Pick an **.html or .txt** file, then set its content type to **image/png** in the Body tab.\n\nExpect **422 CONTENT_TYPE_MISMATCH** \u2014 Tika reads the magic bytes, so the declared type cannot lie. In the predecessor this passed and was stored as an image.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "HTML/text file labelled image/png"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().error.code).to.eql('CONTENT_TYPE_MISMATCH'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: oversized file",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "upload"
+              ]
+            },
+            "description": "Pick a file above 16 MB. Expect **413 MEDIA_TOO_LARGE**.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: quota exceeded",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media",
+                "upload"
+              ]
+            },
+            "description": "Set the project quota very low via Setup, then upload. Expect **507**.\n\n507 is preserved deliberately from the predecessor for downstream compatibility.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 or 507', () => pm.expect([201,507]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: project limit above org total",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{adminApiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/quota/project",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "quota",
+                "project"
+              ]
+            },
+            "description": "Expect **400 QUOTA_LIMIT_INVALID** \u2014 distinct from QUOTA_EXCEEDED (507) because the remedy is an admin correction, not deleting files.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orgId\": \"{{orgId}}\",\n  \"projectId\": \"{{projectId}}\",\n  \"maxBytes\": 99999999999999\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().error.code).to.eql('QUOTA_LIMIT_INVALID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: internal API without admin key",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/quota/org",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "quota",
+                "org"
+              ]
+            },
+            "description": "Expect **401**. This surface was completely unauthenticated in the predecessor \u2014 one call zeroed any tenant's quota.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orgId\": \"{{orgId}}\",\n  \"maxBytes\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NEG: rate limit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "X-Org-Id",
+                "value": "{{orgId}}"
+              },
+              {
+                "key": "X-Project-Id",
+                "value": "{{projectId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "media"
+              ]
+            },
+            "description": "Run in the Collection Runner with a high iteration count to empty the bucket.\n\nExpect **429** with Retry-After and X-RateLimit-* headers."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 or 429', () => pm.expect([200,429]).to.include(pm.response.code));",
+                  "pm.test('rate limit headers', () => pm.expect(pm.response.headers.get('X-RateLimit-Limit')).to.be.ok);",
+                  "if (pm.response.code === 429) pm.test('Retry-After', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.ok);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Ops & Health",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Aggregate health."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,503]', () => pm.expect([200,503]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health/liveness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health",
+                "liveness"
+              ]
+            },
+            "description": "JVM alive. Failure means RESTART the pod."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health/readiness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health",
+                "readiness"
+              ]
+            },
+            "description": "db + storage. Failure means REMOVE FROM LOAD BALANCER, not restart.\n\nRedis is deliberately excluded \u2014 rate limiting fails open, so a Redis outage must not empty the fleet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200,503]', () => pm.expect([200,503]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/prometheus",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "prometheus"
+              ]
+            },
+            "description": "Look for: `storage_upload_duration`, `storage_quota_drift_bytes` (non-zero means a bug), `storage_outbox_lag_seconds`, `storage_auth_rejected`, `storage_teardown_files_marked`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OpenAPI spec",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v3/api-docs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v3",
+                "api-docs"
+              ]
+            },
+            "description": "Machine-readable contract."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status [200]', () => pm.expect([200]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.idea/
+*.iml
+.vscode/
+.DS_Store
+media-uploads/
+*.log
+.env
+.env.*
+# The template carries no secrets and MUST be committed, or a new developer
+# has no way to know which variables exist.
+!.env.example
+application-local-override.yml

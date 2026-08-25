@@ -1,0 +1,2 @@
+# Seed data. NEVER on the Flyway path — applied only by the local profile.
+# The predecessor's V1 seeded fictional quota rows into every environment.

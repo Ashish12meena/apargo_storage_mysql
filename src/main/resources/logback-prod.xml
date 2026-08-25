@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JSON logs in production. MDC carries traceId, requestId, orgId, projectId and
+  userId on every line; none of this existed in the predecessor.
+
+  Never logged above DEBUG: tokens, presigned URLs (they contain signatures),
+  storage keys (capability-bearing), original filenames, request bodies.
+-->
+<configuration>
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>requestId</includeMdcKeyName>
+            <includeMdcKeyName>orgId</includeMdcKeyName>
+            <includeMdcKeyName>projectId</includeMdcKeyName>
+            <includeMdcKeyName>userId</includeMdcKeyName>
+            <customFields>{"service":"storage-service"}</customFields>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="JSON"/>
+    </root>
+
+    <logger name="com.aigreentick.services.storage" level="INFO"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <logger name="software.amazon.awssdk" level="WARN"/>
+</configuration>

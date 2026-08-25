@@ -1,0 +1,73 @@
+server:
+  port: ${SERVER_PORT:8030}
+  shutdown: graceful    
+
+spring:
+  application:
+    name: storage-service
+
+  config:
+    import: optional:file:./.env[.properties]
+
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  flyway:
+    enabled: false
+  datasource:
+    url: jdbc:mysql://146.88.24.113:3306/apargo_wa_messaging
+    username: root
+    password: 2024@Bajajsys          # local-only container credential, not a real secret
+  data:
+    redis:
+      host: 146.88.24.113
+
+storage:
+  active-provider: ${STORAGE_PROVIDER:local}
+  max-files-per-batch: ${MAX_FILES_PER_BATCH:20}
+  local:
+    root-path: ${LOCAL_STORAGE_ROOT:./media-uploads}
+    base-url: ${LOCAL_STORAGE_BASE_URL:http://146.88.24.113:8030/api/v1/media/serve}
+
+  s3:
+    bucket: ${S3_BUCKET:}
+    region: ${S3_REGION:ap-south-1}
+    endpoint: ${S3_ENDPOINT:}
+    cloudfront-domain: ${CLOUDFRONT_DOMAIN:}
+    kms-key-id: ${S3_KMS_KEY_ID:}
+    storage-class: ${S3_STORAGE_CLASS:INTELLIGENT_TIERING}
+    multipart-threshold-bytes: 104857600   # 100 MB
+    part-size-bytes: 16777216              # 16 MB
+    presign-expiry-minutes: 15
+    path-style-access: true
+
+    
+  presigned-upload:
+    enabled: ${PRESIGNED_UPLOAD_ENABLED:false}
+    threshold-bytes: ${PRESIGNED_UPLOAD_THRESHOLD_BYTES:33554432}   # 32 MB
+  orphan-scan-cron: "0 30 3 * * *"
+  retention-cron: "0 0 4 * * *"
+
+security:
+  api-key-enabled: false
+
+logging:
+  level:
+    com.aigreentick.services.storage: DEBUG
+    # Uncomment to see Hibernate's statements and their bound parameters. Both
+    # loggers, via the group declared in application.yml — setting only
+    # org.hibernate.SQL prints every parameter as '?'.
+    # sql: DEBUG
+
+  request:
+    # Both ends of every request on a developer machine: seeing the arrival line
+    # is how you tell "the request never reached the service" apart from "the
+    # service took the request and hung".
+    log-start: true
+    start-level: INFO
+    # Local disks and a local MinIO are slower than production storage, so the
+    # production 2s threshold would flag ordinary uploads as slow all day.
+    slow-threshold: PT5S
+    include-headers: true

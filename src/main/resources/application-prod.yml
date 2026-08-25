@@ -1,0 +1,73 @@
+# Production. Every value here is supplied by the environment; StartupAssertions
+# fails the boot if a required one is missing.
+
+spring:
+  jpa:
+    hibernate:
+      # Hibernate NEVER writes the production schema. Flyway does, and this
+      # verifies the entities match what it produced.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        generate_statistics: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+storage:
+  active-provider: s3          # StartupAssertions rejects 'local' under this profile
+
+security:
+  api-key-enabled: true          # StartupAssertions rejects false under this profile
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # env, beans, loggers and configprops leak bound configuration including
+        # secrets. The predecessor exposed them in every environment with
+        # show-details: always.
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  # JSON on stdout. `logging.structured.format.console` is Spring Boot's own
+  # structured logging, so this stays a YAML setting like everything else —
+  # the previous `logging.config: classpath:logback-prod.xml` handed the whole
+  # configuration to an XML file, which silently disabled every `logging.*`
+  # property below it. Levels set here were being ignored in production.
+  #
+  # ECS (Elastic Common Schema) because it is what most collectors parse
+  # without a custom pipeline. Switch to `logstash` or `gelf` if that suits the
+  # destination better; nothing else changes.
+  structured:
+    format:
+      console: ${LOG_STRUCTURED_FORMAT:ecs}
+    ecs:
+      service:
+        name: ${spring.application.name}
+        version: ${SERVICE_VERSION:2.0.0}
+        environment: ${DEPLOY_ENV:production}
+        node-name: ${HOSTNAME:}
+
+  level:
+    root: INFO
+    com.aigreentick.services.storage: ${LOG_LEVEL:INFO}
+
+  # The MDC (traceId, requestId, orgId, projectId, userId) becomes real JSON
+  # fields under this format rather than text inside a message, so an incident
+  # is a field query. The correlation pattern in application.yml is what the
+  # plain-text profiles use; here it is redundant and unused.
+  request:
+    # Volume control for a busy fleet. Set LOG_REQUEST_LEVEL=DEBUG and
+    # successful requests stop being logged (the root level is INFO) while
+    # every 4xx and 5xx still lands — status overrides this setting upward and
+    # never downward, so quietening the happy path cannot hide a failure.
+    complete-level: ${LOG_REQUEST_LEVEL:INFO}
+    slow-threshold: ${LOG_REQUEST_SLOW_THRESHOLD:PT2S}
+    include-headers: false
