@@ -335,7 +335,7 @@ logging:
     com.aigreentick.services.storage: ${LOG_LEVEL:INFO}
     com.aigreentick.services.storage.api: ${LOG_LEVEL_API:INFO}
     com.aigreentick.services.storage.application: ${LOG_LEVEL_APPLICATION:INFO}
-    com.aigreentick.services.storage.infrastructure.storage: ${LOG_LEVEL_STORAGE:INFO}
+    com.aigreentick.services.storage.infrastructure.storage: ${LOG_LEVEL_STORAGE:DEBUG}
     com.aigreentick.services.storage.infrastructure.outbox: ${LOG_LEVEL_OUTBOX:INFO}
     com.aigreentick.services.storage.infrastructure.ratelimit: ${LOG_LEVEL_RATELIMIT:INFO}
     com.aigreentick.services.storage.infrastructure.scheduler: ${LOG_LEVEL_SCHEDULER:INFO}
@@ -355,7 +355,7 @@ logging:
     org.apache.tika: WARN
     org.springframework.web: INFO
     org.springframework.jdbc.datasource.init: INFO
-    com.zaxxer.hikari: ${LOG_LEVEL_HIKARI:INFO}
+    com.zaxxer.hikari: ${LOG_LEVEL_HIKARI:DEBUG}
 
   # Named groups, so `logging.level.<group>` sets several loggers at once. Set
   # LOG_LEVEL_SQL_DEBUG=DEBUG to get statements AND their bound parameters,
