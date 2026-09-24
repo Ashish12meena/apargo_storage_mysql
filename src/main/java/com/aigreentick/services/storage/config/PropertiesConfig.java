@@ -1,5 +1,6 @@
 package com.aigreentick.services.storage.config;
 
+import com.aigreentick.services.storage.config.properties.ApiProperties;
 import com.aigreentick.services.storage.config.properties.CorsProperties;
 import com.aigreentick.services.storage.config.properties.MediaValidationProperties;
 import com.aigreentick.services.storage.config.properties.OutboxProperties;
@@ -40,7 +41,8 @@ import org.springframework.context.annotation.Configuration;
         CorsProperties.class,
         RateLimitProperties.class,
         OutboxProperties.class,
-        RequestLoggingProperties.class
+        RequestLoggingProperties.class,
+        ApiProperties.class
 })
 public class PropertiesConfig {
 }

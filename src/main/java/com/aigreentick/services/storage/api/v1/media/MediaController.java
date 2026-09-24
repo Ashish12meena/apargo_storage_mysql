@@ -3,8 +3,13 @@ package com.aigreentick.services.storage.api.v1.media;
 import com.aigreentick.services.storage.api.v1.media.dto.request.BatchDeleteRequest;
 import com.aigreentick.services.storage.api.v1.media.dto.request.CompleteUploadRequest;
 import com.aigreentick.services.storage.api.v1.media.dto.request.InitiateUploadRequest;
+import com.aigreentick.services.storage.api.common.Responses;
 import com.aigreentick.services.storage.api.common.dto.response.ApiResponse;
+import com.aigreentick.services.storage.api.common.validation.OneOf;
+import com.aigreentick.services.storage.api.security.RequiresIdempotencyKey;
+import com.aigreentick.services.storage.api.v1.media.dto.response.BatchDeleteResponse;
 import com.aigreentick.services.storage.api.v1.media.dto.response.BatchItemResult;
+import com.aigreentick.services.storage.api.v1.media.dto.response.DownloadUrlResponse;
 import com.aigreentick.services.storage.api.v1.media.dto.response.BatchUploadResponse;
 import com.aigreentick.services.storage.api.v1.media.dto.response.MediaResponse;
 import com.aigreentick.services.storage.api.common.dto.response.PageResponse;
@@ -30,6 +35,7 @@ import com.aigreentick.services.storage.application.port.in.result.MediaView;
 import com.aigreentick.services.storage.common.constants.ApiPaths;
 import com.aigreentick.services.storage.common.constants.HeaderNames;
 import com.aigreentick.services.storage.common.context.RequestContext;
+import com.aigreentick.services.storage.common.error.ErrorCode;
 import com.aigreentick.services.storage.domain.exception.DomainException;
 import com.aigreentick.services.storage.domain.media.MediaId;
 import com.aigreentick.services.storage.domain.media.MediaType;
@@ -38,8 +44,10 @@ import com.aigreentick.services.storage.domain.shared.ByteSize;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -55,14 +63,21 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * {@code /api/v1/media} — tenant-facing operations.
+ *
+ * <p>Follows the company API Standard: every JSON response is the
+ * {@link ApiResponse} wrapper built through {@link Responses}; creates are
+ * {@code 201} + {@code Location} and require {@code X-Idempotency-Key}; batch
+ * routes are {@code 200} with per-item results in {@code data}; the list uses
+ * cursor paging ({@code size}, {@code cursor}).
  *
  * <p>Constraints this class honours:
  * <ul>
@@ -72,6 +87,7 @@ import lombok.extern.slf4j.Slf4j;
  *       conditional expressing a business rule.</li>
  * </ul>
  */
+@Validated
 @RestController
 @RequestMapping(ApiPaths.MEDIA)
 @Tag(name = "Media", description = "Tenant-facing media operations")
@@ -102,15 +118,17 @@ public class MediaController {
 
     // ────────────────────────────── UPLOAD ──────────────────────────────
 
+    @RequiresIdempotencyKey
     @PostMapping(path = "/upload", consumes = MULTIPART)
-    @Operation(summary = "Upload a small file through the service")
+    @Operation(summary = "Upload a small file through the service",
+            description = "201 Created with Location: /api/v1/media/{id}. Requires X-Idempotency-Key.")
     public ResponseEntity<ApiResponse<MediaResponse>> upload(
             @RequestPart("file") MultipartFile file,
             @RequestHeader(value = HeaderNames.IDEMPOTENCY_KEY, required = false) String idempotencyKey) {
 
         // Entry marker. Reaching this line proves the filter chain passed, the
         // multipart part named "file" was resolved, and argument binding
-        // succeeded — so a REQUEST_INVALID with NO such line means the request
+        // succeeded — so a 400/422 with NO such line means the request
         // failed during argument resolution (missing part, missing/unparseable
         // header) and never entered the controller at all.
         log.info("upload received: filename={} declaredType={} bytes={} idempotencyKey={}",
@@ -128,26 +146,30 @@ public class MediaController {
                 file.getContentType(), ByteSize.of(file.getSize()),
                 () -> openStream(file), idempotencyKey));
 
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Upload complete", mapper.toResponse(view),
-                        RequestContext.traceIdOrNull()));
+        return Responses.created(URI.create(ApiPaths.mediaLocation(view.id())),
+                "Upload complete", mapper.toResponse(view));
     }
 
     /**
      * Many small files in ONE request, for {@code template-service}, which
      * downloads media in batches and would otherwise open one connection per file.
      *
-     * <p>Returns 207 on every response including all-success, matching
-     * {@code DELETE /media/batch} — the service's other partial-success route.
-     * Consistency with the existing convention matters more here than any abstract
-     * argument about which status a fully-successful batch deserves.
+     * <p>Returns {@code 200} whenever the batch was processed, including mixed
+     * results: the standard's "action done, with a result" row. Per-file outcomes
+     * live in {@code data.results[]} (unchanged shape), so a client must read
+     * {@code failedCount}, never infer per-file success from the HTTP status.
+     * (Pre-standard this was {@code 207}; every 2xx client, template-service
+     * included, is unaffected.)
      *
      * <p>Request-level rejections (no files, too many files) are NOT batch results:
      * they leave through the global exception handler with the standard envelope.
      * Per-file failures are results.
      */
+    @RequiresIdempotencyKey
     @PostMapping(path = "/upload/batch", consumes = MULTIPART)
-    @Operation(summary = "Upload many small files in one request; per-file partial success")
+    @Operation(summary = "Upload many small files in one request; per-file partial success",
+            description = "200 with data {successCount, failedCount, results[]}. Requires X-Idempotency-Key "
+                    + "(per-file keys K:0, K:1, ... are derived from it).")
     public ResponseEntity<ApiResponse<BatchUploadResponse>> uploadBatch(
             @RequestPart(value = "files", required = false) List<MultipartFile> files,
             @RequestHeader(value = HeaderNames.IDEMPOTENCY_KEY, required = false) String idempotencyKey) {
@@ -170,9 +192,7 @@ public class MediaController {
         BatchUploadView view = batchUploadUseCase.uploadBatch(new BatchProxiedUploadCommand(
                 principal.tenant(), actor(principal), items, idempotencyKey));
 
-        return ResponseEntity.status(HttpStatus.MULTI_STATUS)
-                .body(ApiResponse.success("Batch upload processed", mapper.toResponse(view),
-                        RequestContext.traceIdOrNull()));
+        return Responses.ok("Batch upload processed", mapper.toResponse(view));
     }
 
     /**
@@ -187,8 +207,10 @@ public class MediaController {
         }
     }
 
+    @RequiresIdempotencyKey
     @PostMapping("/uploads")
-    @Operation(summary = "Initiate a direct-to-storage upload and receive presigned URL(s)")
+    @Operation(summary = "Initiate a direct-to-storage upload and receive presigned URL(s)",
+            description = "201 Created with Location: /api/v1/media/uploads/{uploadId}. Requires X-Idempotency-Key.")
     public ResponseEntity<ApiResponse<UploadTicketResponse>> initiate(
             @Valid @RequestBody InitiateUploadRequest request,
             @RequestHeader(value = HeaderNames.IDEMPOTENCY_KEY, required = false) String idempotencyKey) {
@@ -200,9 +222,9 @@ public class MediaController {
                 principal.tenant(), actor(principal), request.filename(),
                 request.declaredContentType(), ByteSize.of(request.sizeBytes()), idempotencyKey));
 
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Upload initiated", mapper.toResponse(ticket),
-                        RequestContext.traceIdOrNull()));
+        UploadTicketResponse response = mapper.toResponse(ticket);
+        return Responses.created(URI.create(ApiPaths.uploadSessionLocation(response.uploadId())),
+                "Upload initiated", response);
     }
 
     @PostMapping("/uploads/{uploadId}/complete")
@@ -222,8 +244,7 @@ public class MediaController {
         MediaView view = uploadUseCase.complete(new CompleteUploadCommand(
                 principal.tenant(), actor(principal), uploadId, parts));
 
-        return ResponseEntity.ok(ApiResponse.success("Upload complete", mapper.toResponse(view),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Upload complete", mapper.toResponse(view));
     }
 
     @DeleteMapping("/uploads/{uploadId}")
@@ -232,26 +253,34 @@ public class MediaController {
         TenantPrincipal principal = TenantContext.require();
         guard.requireScope(principal, Scope.MEDIA_WRITE);
         uploadUseCase.abort(uploadId, principal.tenant());
-        return ResponseEntity.noContent().build();
+        return Responses.noContent();
     }
 
     // ────────────────────────────── READ ──────────────────────────────
 
+    /**
+     * Cursor paging (API Standard §5): {@code size} 1–100 (default 20) and the
+     * opaque {@code cursor} from the previous page's
+     * {@code pagination.nextCursor}. Out-of-range {@code size} or an unknown
+     * {@code type} is 422.
+     */
     @GetMapping
-    @Operation(summary = "List media with keyset pagination")
+    @Operation(summary = "List media with cursor pagination",
+            description = "data = {items, pagination: {size, nextCursor, hasNext}}. Omit cursor for the first page.")
     public ResponseEntity<ApiResponse<PageResponse<MediaResponse>>> list(
-            @RequestParam(required = false) String type,
+            @RequestParam(required = false)
+            @OneOf(value = {"IMAGE", "VIDEO", "AUDIO", "DOCUMENT"}, ignoreCase = true) String type,
             @RequestParam(required = false) String cursor,
-            @RequestParam(defaultValue = "20") int limit) {
+            @RequestParam(defaultValue = "" + MediaListQuery.DEFAULT_LIMIT)
+            @Min(1) @Max(MediaListQuery.MAX_LIMIT) int size) {
 
         TenantPrincipal principal = TenantContext.require();
         guard.requireScope(principal, Scope.MEDIA_READ);
 
-        var page = queryUseCase.list(new MediaListQuery(
-                principal.tenant(), MediaType.fromValue(type), cursor, limit));
+        MediaListQuery query = new MediaListQuery(principal.tenant(), MediaType.fromValue(type), cursor, size);
+        var page = queryUseCase.list(query);
 
-        return ResponseEntity.ok(ApiResponse.success(null, mapper.toPageResponse(page),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Media fetched", mapper.toPageResponse(page, query.limit()));
     }
 
     @GetMapping("/{mediaId}")
@@ -260,8 +289,7 @@ public class MediaController {
         TenantPrincipal principal = TenantContext.require();
         guard.requireScope(principal, Scope.MEDIA_READ);
         MediaView view = queryUseCase.getById(MediaId.parse(mediaId), principal.tenant());
-        return ResponseEntity.ok(ApiResponse.success(null, mapper.toResponse(view),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Media fetched", mapper.toResponse(view));
     }
 
     /**
@@ -270,7 +298,7 @@ public class MediaController {
      */
     @GetMapping("/{mediaId}/download-url")
     @Operation(summary = "Mint a short-lived, tenant-scoped download URL")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> downloadUrl(
+    public ResponseEntity<ApiResponse<DownloadUrlResponse>> downloadUrl(
             @PathVariable String mediaId,
             @RequestParam(defaultValue = "900") long ttlSeconds) {
 
@@ -280,9 +308,7 @@ public class MediaController {
         Duration ttl = clampTtl(ttlSeconds);
         String url = queryUseCase.generateDownloadUrl(MediaId.parse(mediaId), principal.tenant(), ttl);
 
-        return ResponseEntity.ok(ApiResponse.success(null,
-                Map.of("url", url, "expiresAt", java.time.Instant.now().plus(ttl)),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Download URL issued", new DownloadUrlResponse(url, Instant.now().plus(ttl)));
     }
 
     private Duration clampTtl(long requestedSeconds) {
@@ -308,7 +334,7 @@ public class MediaController {
         }
         deleteUseCase.delete(new DeleteMediaCommand(
                 MediaId.parse(mediaId), principal.tenant(), actor(principal), permanent));
-        return ResponseEntity.noContent().build();
+        return Responses.noContent();
     }
 
     @PostMapping("/{mediaId}/restore")
@@ -318,14 +344,17 @@ public class MediaController {
         guard.requireScope(principal, Scope.MEDIA_DELETE);
         MediaView view = deleteUseCase.restore(new RestoreMediaCommand(
                 MediaId.parse(mediaId), principal.tenant(), actor(principal)));
-        return ResponseEntity.ok(ApiResponse.success("Restored", mapper.toResponse(view),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Restored", mapper.toResponse(view));
     }
 
-    /** Partial success is normal: one bad id never fails the batch. */
+    /**
+     * Partial success is normal: one bad id never fails the batch. {@code 200}
+     * with {@code data = {successCount, failedCount, results[]}} (was a bare
+     * array under {@code 207}).
+     */
     @DeleteMapping("/batch")
     @Operation(summary = "Delete up to 100 items, reporting per-item results")
-    public ResponseEntity<ApiResponse<List<BatchItemResult>>> deleteBatch(
+    public ResponseEntity<ApiResponse<BatchDeleteResponse>> deleteBatch(
             @Valid @RequestBody BatchDeleteRequest request) {
 
         TenantPrincipal principal = TenantContext.require();
@@ -340,11 +369,10 @@ public class MediaController {
             } catch (DomainException e) {
                 results.add(BatchItemResult.failed(rawId, e.errorCode().name(), e.clientMessage()));
             } catch (IllegalArgumentException e) {
-                results.add(BatchItemResult.failed(rawId, "REQUEST_INVALID", "Malformed media id."));
+                results.add(BatchItemResult.failed(rawId, ErrorCode.VALIDATION_FAILED.name(), "Malformed media id."));
             }
         }
-        return ResponseEntity.status(HttpStatus.MULTI_STATUS)
-                .body(ApiResponse.success(null, results, RequestContext.traceIdOrNull()));
+        return Responses.ok("Batch delete processed", BatchDeleteResponse.of(results));
     }
 
     private Actor actor(TenantPrincipal principal) {

@@ -26,11 +26,23 @@ public final class ApiPaths {
      */
     public static final String MEDIA_UPLOAD_BATCH = MEDIA + "/upload/batch";
 
+    /** Direct-upload sessions; {@code Location} of a created session. */
+    public static final String MEDIA_UPLOADS = MEDIA + "/uploads";
+
+    /** {@code Location} value for a media item: a path, so no internal host leaks through a gateway. */
+    public static String mediaLocation(String mediaId) {
+        return MEDIA + "/" + mediaId;
+    }
+
+    /** {@code Location} value for a direct-upload session. */
+    public static String uploadSessionLocation(String uploadId) {
+        return MEDIA_UPLOADS + "/" + uploadId;
+    }
+
+    /** Servlet error path, answered in the standard wrapper by {@code ApiErrorController}. */
+    public static final String ERROR = "/error";
+
     public static final String INTERNAL = "/internal";
     public static final String INTERNAL_QUOTA = INTERNAL + "/quota";
     public static final String INTERNAL_MEDIA = INTERNAL + "/media";
-
-    /** @deprecated legacy unversioned quota route, kept for one known consumer. */
-    @Deprecated
-    public static final String LEGACY_QUOTA = "/quota";
 }

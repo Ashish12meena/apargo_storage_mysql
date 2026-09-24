@@ -176,9 +176,9 @@ public class MediaBatchUploadService implements BatchUploadMediaUseCase {
                 // Unexpected. Full detail with the stack trace to the log, a
                 // generic code to the client — never the exception message, which
                 // may carry a storage key or a provider response.
-                log.error("batch {} file {} ({}) failed unexpectedly [trace={}]",
+                log.error("batch {} file {} ({}) failed unexpectedly [req={}]",
                         batchId, index, file.originalFilename(),
-                        RequestContext.traceIdOrNull(), e);
+                        RequestContext.requestIdOrNull(), e);
 
                 results.add(BatchUploadView.ItemView.failed(file.originalFilename(),
                         ErrorCode.INTERNAL_ERROR.name(), ErrorCode.INTERNAL_ERROR.defaultMessage()));

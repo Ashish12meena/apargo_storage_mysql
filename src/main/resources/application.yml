@@ -223,7 +223,11 @@ outbox:
 
 security:
   api-key-enabled: ${SECURITY_API_KEY_ENABLED:false}
-  api-key-header: X-Api-Key
+  # Callers present their key in X-Internal-Api-Key (API Standard name, fixed
+  # in HeaderNames). The pre-standard X-Api-Key is NOT accepted.
+  #
+  # template-service sends its INTERNAL_API_KEY in X-Internal-Api-Key, so
+  # TEMPLATE_SERVICE_API_KEY here must hold the SAME value in every environment.
 
   clients:
     - id: template-service
@@ -237,11 +241,17 @@ security:
       scopes: [quota:admin, quota:read, tenant:teardown]
 
 
+# ─── Company API Standard ──────────────────────────────────────────────────
+api:
+  # 400 IDEMPOTENCY_KEY_REQUIRED when an upload/create arrives without
+  # X-Idempotency-Key. The standard makes it required on create APIs.
+  idempotency-key-required: ${API_IDEMPOTENCY_KEY_REQUIRED:true}
+
 cors:
   allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
   allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
   allowed-headers: ["*"]
-  exposed-headers: [X-Trace-Id, X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After]
+  exposed-headers: [X-Request-Id, Location, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After]
   allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
   max-age-seconds: 3600
 
@@ -369,12 +379,14 @@ logging:
   # ── Correlation ───────────────────────────────────────────────────────────
   # Injected into Spring Boot's default console and file patterns, so EVERY
   # line — including Hibernate's and Tomcat's — carries the ids. This is what
-  # makes a trace id from an error response greppable across the whole log.
+  # makes a request id from an error response greppable across the whole log.
   #
   # The `:-` defaults matter: a scheduled job has no request, and without them
-  # every background line would read `%X{traceId}` literally.
+  # every background line would read `%X{requestId}` literally.
   pattern:
-    correlation: "[trace=%X{traceId:-} req=%X{requestId:-} org=%X{orgId:-} proj=%X{projectId:-}] "
+    # requestId is X-Request-Id (the only tracking id); caller is the
+    # authenticated client; userId is X-User-Id when a user is acting.
+    correlation: "[req=%X{requestId:-} org=%X{orgId:-} proj=%X{projectId:-} caller=%X{caller:-} user=%X{userId:-}] "
     # Milliseconds, not the default seconds: request durations here are often
     # single-digit milliseconds and a second-resolution timestamp cannot order
     # them.
@@ -434,8 +446,9 @@ logging:
     include-headers: ${LOG_REQUEST_HEADERS:false}
     headers:
       - X-Request-Id
-      - X-Trace-Id
-      - Idempotency-Key
+      - X-Idempotency-Key
+      - X-Internal-Caller
+      - X-User-Id
       - Content-Type
       - User-Agent
 

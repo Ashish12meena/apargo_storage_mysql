@@ -5,35 +5,72 @@ A route that exists in code but not here is a defect.
 
 ## 1. Conventions
 
-- Base path `/api/v1`. Internal service-to-service under `/internal`.
-- Every response uses the envelope in §2. **No exceptions**, including responses
-  written by servlet filters before the dispatcher runs.
-- All timestamps ISO-8601 UTC. All sizes in bytes. All ids are strings on the wire
-  even when numeric internally, so a future id-format change is not breaking.
-- Every mutating endpoint requires `Idempotency-Key`.
-- Tenant scope comes from `X-Org-Id` / `X-Project-Id`, read only after the API key
-  validates. **No endpoint accepts an org or project id as a path or query
-  parameter** on the tenant-facing surface.
+This service follows the **company API Standard** (ADR-015): headers, request
+format, response wrapper, status codes, pagination and error format.
 
-## 2. Response envelope — FROZEN
+- Base path `/api/v1`. Internal service-to-service under `/internal`.
+- Every JSON response uses the wrapper in §2 — including responses written by
+  servlet filters and the container `/error` path. Documented exceptions: `204`
+  (no body) and the file stream of `GET /api/v1/media/serve/**`.
+- Timestamps ISO-8601 UTC. Sizes in bytes. Ids are strings on the wire.
+- Field names `camelCase`; enum values `UPPER_SNAKE_CASE`.
+
+**Request headers**
+
+| Header | Required | Purpose |
+|---|---|---|
+| `X-Internal-Api-Key` | Yes | Calling service's key |
+| `X-Internal-Caller` | Recommended | Calling service name; mismatches with the key's client are logged |
+| `X-Org-Id`, `X-Project-Id` | Yes on `/api/**` | Tenant the request acts for; read only after the key validates. Missing/invalid → `400 BAD_REQUEST` |
+| `X-User-Id` | When a user is acting | Logged (MDC `userId`); not used for authorisation |
+| `X-Request-Id` | No | The only tracking header; generated if absent, always echoed. `X-Trace-Id` is not used |
+| `X-Idempotency-Key` | Yes on create | Upload, batch upload, initiate. Missing → `400 IDEMPOTENCY_KEY_REQUIRED` |
+
+**Response headers:** `Content-Type: application/json`, `X-Request-Id` (always),
+`Location` (on `201`), `Retry-After` (on `429`, `503`, and `409
+IDEMPOTENCY_KEY_IN_PROGRESS`).
+
+**Only standard header names are accepted.** The pre-standard `X-Api-Key`,
+`Idempotency-Key` and `X-Trace-Id` are not read at all: a request that uses
+them gets `401` / `400 IDEMPOTENCY_KEY_REQUIRED` exactly as if the header were
+absent.
+
+**No endpoint on the tenant-facing surface accepts an org or project id** as a
+path or query parameter. The internal admin surface (§4) addresses a *target*
+tenant as resource identity; that is the one documented exception.
+
+## 2. Response wrapper
 
 ```jsonc
+// success
 {
-  "status":  "SUCCESS" | "ERROR",
-  "message": "human readable, may be reworded freely",
-  "data":    { },
-  "error":   { "code": "QUOTA_EXCEEDED", "message": "...", "details": [ ] },
-  "traceId": "0af7651916cd43dd8448eb211c80319c"
+  "success": true,
+  "status":  201,                    // always equals the HTTP status
+  "code":    "SUCCESS",
+  "message": "Upload complete",      // human readable, may be reworded freely
+  "data":    { },                    // lists: { "items": [...], "pagination": {...} }
+  "errors":  [],
+  "meta":    { "requestId": "3f2a…", "timestamp": "2026-01-15T10:30:00Z" }
+}
+// error
+{
+  "success": false,
+  "status":  422,
+  "code":    "VALIDATION_FAILED",
+  "message": "Request has invalid fields.",
+  "data":    null,
+  "errors":  [ { "field": "size", "code": "OUT_OF_RANGE", "message": "must be less than or equal to 100" } ],
+  "meta":    { "requestId": "3f2a…", "timestamp": "2026-01-15T10:30:00Z", "path": "/api/v1/media" }
 }
 ```
 
-`status`, `message`, `data` are unchanged from the current service. `error` and
-`traceId` are **additive** and therefore backward-compatible.
+**Clients decide success from the HTTP status (or `success`), and use `code`
+only for specific handling.** `errors[].code` is one of `REQUIRED`,
+`INVALID_FORMAT`, `INVALID_VALUE`, `TOO_LONG`, `OUT_OF_RANGE`. Error codes are
+listed in [10 §3](10-error-handling.md).
 
-**Clients must branch on `error.code`, never on `message`.** Codes are append-only
-within a major version: never renamed, never repurposed, never removed. Today
-clients have only the message to match on, which breaks silently whenever anyone
-improves the wording.
+Pre-standard shape (`{status: "SUCCESS"|"ERROR", message, data, error, traceId}`)
+is withdrawn — see §7.4.
 
 ## 3. Tenant-facing endpoints
 
@@ -41,12 +78,12 @@ improves the wording.
 
 Preserved from the current API. `multipart/form-data`, field `file`.
 
-Headers: `X-Api-Key` (required), `X-Org-Id`, `X-Project-Id` (required),
-`Idempotency-Key` (recommended; required from Phase 3).
+Headers: §1, including `X-Idempotency-Key` (required).
 
-`201` → `MediaResponse`.
-Errors: `400` invalid, `401`, `403`, `409` duplicate in progress, `413` too large,
-`415` type not allowed, `422` content mismatch, `429`, `507` quota exceeded.
+`201` + `Location: /api/v1/media/{id}` → `MediaResponse`.
+Errors: `400` unreadable / missing key, `401`, `403`, `409` in progress or key
+reused, `413` too large, `415` type not allowed, `422` invalid or content
+mismatch, `429`, `507` quota exceeded.
 
 Bodies above `media.validation.proxied-upload-threshold-bytes` are rejected with
 `413` and a pointer to the direct-upload flow. Proxying large files is what makes
@@ -60,33 +97,42 @@ media in batches and would otherwise open one connection per file.
 ```http
 POST /api/v1/media/upload/batch
 Content-Type: multipart/form-data
-X-Api-Key, X-Org-Id, X-Project-Id
-Idempotency-Key: <optional, BATCH level>
+X-Internal-Api-Key, X-Internal-Caller, X-Org-Id, X-Project-Id, X-Request-Id
+X-Idempotency-Key: <required, BATCH level>
 ```
 
 - Multipart field name is **`files`**, repeated once per file. Not `file`.
 - Maximum files per request: `storage.max-files-per-batch` (default 20).
 
-**`207 Multi-Status`** on every response, including all-success — matching
-`DELETE /api/v1/media/batch`, the service's other partial-success route.
+**`200 OK`** whenever the batch was processed, including mixed results (the
+standard's "action done, with a result"). Per-file outcomes are in `data`; read
+`failedCount`, never infer per-file success from the HTTP status. (Was `207`
+before ADR-015; every 2xx-accepting client is unaffected.)
 
 ```json
 {
-  "status": "SUCCESS",
+  "success": true, "status": 200, "code": "SUCCESS",
   "message": "Batch upload processed",
   "data": {
     "successCount": 2,
     "failedCount": 1,
     "results": [
-      { "originalFilename": "a.jpg", "status": "SUCCESS", "media": { "id": "41", "...": "..." } },
-      { "originalFilename": "big.mp4", "status": "FAILED",
-        "errorCode": "MEDIA_TOO_LARGE", "message": "The file exceeds the maximum permitted size." },
-      { "originalFilename": "c.png", "status": "SUCCESS", "media": { "id": "42", "...": "..." } }
+      { "originalFilename": "a.jpg", "status": "SUCCESS", "url": "https://…", "mediaType": "IMAGE",
+        "contentType": "image/jpeg", "fileSizeBytes": 1024, "error": null },
+      { "originalFilename": "big.mp4", "status": "FAILED", "url": null, "mediaType": null,
+        "contentType": null, "fileSizeBytes": null,
+        "error": { "code": "MEDIA_TOO_LARGE", "message": "The file exceeds the maximum allowed size." } },
+      { "originalFilename": "c.png", "status": "SUCCESS", "url": "https://…", "mediaType": "IMAGE",
+        "contentType": "image/png", "fileSizeBytes": 2048, "error": null }
     ]
   },
-  "traceId": "..."
+  "errors": [],
+  "meta": { "requestId": "…", "timestamp": "…" }
 }
 ```
+
+The `data` shape is **frozen for template-service**, which joins `results` to its
+tasks by position and branches on `error.code`.
 
 - `results` is in **request order**, one entry per submitted file, so
   `results.size() == successCount + failedCount` always holds.
@@ -107,7 +153,8 @@ envelope through the global exception handler:
 
 | Condition | Status | Code |
 |---|---|---|
-| `files` absent or empty | 400 | `BATCH_FILES_REQUIRED` |
+| `X-Idempotency-Key` absent | 400 | `IDEMPOTENCY_KEY_REQUIRED` |
+| `files` absent or empty | 422 | `BATCH_FILES_REQUIRED` |
 | more files than the configured maximum | 413 | `BATCH_TOO_MANY_FILES` |
 | aggregate request over `max-request-size` | 413 | `MEDIA_TOO_LARGE` (container-level) |
 
@@ -125,6 +172,8 @@ half-finished batch stays half-finished. See docs/17 A-12.
 ---
 
 ### `POST /api/v1/media/uploads` — initiate direct upload
+
+Requires `X-Idempotency-Key`. `201` + `Location: /api/v1/media/uploads/{uploadId}`.
 
 ```jsonc
 // request
@@ -157,14 +206,21 @@ result.
 
 ### `GET /api/v1/media` — list
 
-Query: `type`, `cursor`, `limit` (default 20, max 100).
+**Cursor paging** (API Standard §5). Query: `type` (`IMAGE`/`VIDEO`/`AUDIO`/`DOCUMENT`),
+`cursor` (omit for the first page), `size` (1–100, default 20). An out-of-range
+`size` or unknown `type` is `422 VALIDATION_FAILED`.
 
 ```jsonc
-{ "items": [ /* MediaResponse */ ], "nextCursor": "eyJ0IjoiMjAyNi...", "hasMore": true }
+"data": {
+  "items": [ /* MediaResponse */ ],
+  "pagination": { "size": 20, "nextCursor": "eyJ0IjoiMjAyNi...", "hasNext": true }
+}
 ```
 
-**BREAKING** relative to today's `page`/`size` + `Page<T>`. Offset pagination
-degrades linearly with depth and the target is millions of files. Migration in §7.
+`nextCursor` is `null` and `hasNext` `false` on the last page. The cursor is
+opaque — clients must not decode or build it. Cursor rather than page numbers
+because offset paging degrades linearly with depth and the target is millions of
+files; a total count would need a `COUNT(*)` on every request.
 
 ### `GET /api/v1/media/{mediaId}` — NEW
 
@@ -186,9 +242,11 @@ released synchronously; the object is removed asynchronously.
 
 ```jsonc
 { "mediaIds": ["1","2","3"] }
-// 207
-{ "items": [ { "id": "1", "success": true },
-             { "id": "2", "success": false, "errorCode": "MEDIA_NOT_FOUND" } ] }
+// 200 — data
+{ "successCount": 1, "failedCount": 2,
+  "results": [ { "id": "1", "success": true },
+               { "id": "2", "success": false, "errorCode": "MEDIA_NOT_FOUND", "message": "Media not found." },
+               { "id": "x", "success": false, "errorCode": "VALIDATION_FAILED", "message": "Malformed media id." } ] }
 ```
 
 Max 100 ids. Partial success is normal; one failure never fails the batch.
@@ -205,7 +263,9 @@ takes a media id and resolves the key server-side.
 ### `GET /api/v1/media/serve/**` — FROZEN PATH
 
 Local provider only. Absolute URLs built from this path are persisted in another
-service's database, so **the path may never move**. Behaviour changes in Phase 3:
+service's database, so **the path may never move**. A documented exception to
+the wrapper: success is the file (`200`/`206`/`304`); errors use the wrapper,
+and a saturated stream pool is `503 SERVICE_UNAVAILABLE` + `Retry-After: 5`. Behaviour changes in Phase 3:
 ownership check added, `Range` and `ETag` supported, `Cache-Control` becomes
 `private, max-age=300`, `Content-Disposition: attachment` added.
 
@@ -216,8 +276,12 @@ usage and discover the limit by hitting it.
 
 ## 4. Internal endpoints
 
-`/internal/**` requires an API key whose client holds `quota:admin`, and is
-network-restricted to the organisation service. There is no flag that disables it
+`/internal/**` requires an API key whose client holds `quota:admin` (no key →
+`401 UNAUTHENTICATED`; key without the scope → `403 FORBIDDEN`), and is
+network-restricted to the organisation service. Responses use the standard
+wrapper. The org/project in these paths and bodies is the **target** of the
+admin operation, not the caller's tenant — the documented exception to
+"tenant only from headers". There is no flag that disables it
 beyond `security.api-key-enabled`, which production rejects.
 
 | Endpoint | Contract |
@@ -226,65 +290,71 @@ beyond `security.api-key-enabled`, which production rejects.
 | `PUT /internal/quota/project` | Unchanged shape. Requires the org row to exist. |
 | `GET /internal/quota/org/{orgId}` | Unchanged. |
 | `GET /internal/quota/project/{orgId}/{projectId}` | Unchanged. |
-| `DELETE /internal/media/project/{orgId}/{projectId}` | Async teardown. `202 Accepted` + handle. `?permanent=` skips the grace period. Requires `tenant:teardown`. |
+| `DELETE /internal/media/project/{orgId}/{projectId}` | Async teardown. `202 Accepted` + `{jobId, statusUrl}`. `?permanent=` skips the grace period. Requires `tenant:teardown`. |
 | `DELETE /internal/media/org/{orgId}` | Async offboarding, every project. Same contract. |
 
 **Teardown response** (`202`):
 
 ```jsonc
-{ "status": "SUCCESS", "message": "Teardown accepted; processing asynchronously",
-  "data": { "handle": "6f1c...", "scope": "ORG", "permanent": false, "status": "ACCEPTED" },
-  "traceId": "..." }
+{ "success": true, "status": 202, "code": "SUCCESS",
+  "message": "Teardown accepted; processing asynchronously",
+  "data": { "jobId": "6f1c...", "statusUrl": "/internal/quota/org/42", "scope": "ORG", "permanent": false },
+  "errors": [], "meta": { "requestId": "...", "timestamp": "..." } }
 ```
 
 `202`, not `200`: the work is accepted, not performed. Reporting success before the
 files are gone would be a claim a compliance auditor could act on. Track completion
-by the `tenant.teardown.completed` event or the `handle` in `media_audit`.
+by the `tenant.teardown.completed` event, the `jobId` in `media_audit`, or the
+quota at `statusUrl` falling to zero.
 
 Both are processed in bounded batches through the outbox, so a crash resumes rather
 than restarting.
 
-Request and response shapes are preserved exactly. Only the authentication
-requirement changes, and that is coordinated with the organisation service team
-([08 §2](08-integrations.md)).
+Payload shapes are preserved; the wrapper follows §2. Coordinated with the
+organisation service team ([08 §2](08-integrations.md)).
 
 ## 5. Status codes
 
 | Code | Meaning |
 |---|---|
-| 200 / 201 / 204 | Success |
-| 202 | Accepted; async work queued (teardown) |
-| 207 | Batch, mixed results — `DELETE /media/batch` and `POST /media/upload/batch` |
-| 400 | Malformed, or quota not provisioned |
+| 200 | Read; action with a result — including batch upload/delete with mixed per-item results |
+| 201 | Created (`upload`, `uploads`) + `Location` |
+| 202 | Accepted; async work queued (teardown) — `{jobId, statusUrl}` |
+| 204 | Done, no body (delete, abort) |
+| 400 | Request can't be read: bad JSON, missing/invalid header (incl. tenant headers), missing `X-Idempotency-Key`, malformed id |
 | 401 | Missing or invalid credential |
 | 403 | Authenticated, scope missing |
-| 404 | Absent **or** belongs to another tenant |
-| 409 | State conflict, or an identical request in progress |
-| 413 | Body exceeds the proxied-upload limit |
-| 415 | Declared type not allowed |
-| 422 | Content does not match declaration; or idempotency key reused for a different request |
-| 429 | Rate limited |
+| 404 | Absent **or** belongs to another tenant; unknown route |
+| 409 | State conflict; quota not provisioned; idempotency key in progress or reused |
+| 413 | File or batch too large |
+| 415 | File type not allowed |
+| 422 | Invalid field values (`VALIDATION_FAILED`, with `errors[]`); invalid media; content does not match declaration |
+| 429 | Rate limited (`Retry-After`) |
 | 500 | Unexpected |
+| 501 | Operation not supported by the active provider |
 | 502 | Storage backend failed |
-| 503 | Dependency unavailable |
-| 507 | Quota exceeded — **preserved deliberately** for downstream compatibility |
+| 503 | Temporarily saturated (`Retry-After`) |
+| 507 | Quota exceeded — kept: the literal HTTP meaning, already handled by consumers |
+
+`207` is no longer used.
 
 ## 6. Compatibility commitments
 
 | Contract | Commitment |
 |---|---|
 | `/api/v1/media/serve/**` | Frozen forever. URLs persisted downstream. |
-| Response envelope | Frozen. Additive fields only. |
+| Response wrapper | Company API Standard (ADR-015). Additive fields inside `data` only. |
+| Batch upload `data` shape and per-file codes | Frozen — template-service parses them. |
 | `POST /api/v1/media/upload` | Request shape unchanged. |
 | Internal quota shapes | Unchanged. |
 | `507` for quota | Preserved. |
-| `ErrorCode` values | Append-only. |
+| `ErrorCode` values | Append-only from ADR-015 on (four generic codes were renamed by it). |
 
 ## 7. Breaking changes and their migration
 
 Breaking changes are acceptable where they buy something real. Three are planned.
 
-**7.1 Authentication becomes mandatory.** Every request now needs `X-Api-Key`
+**7.1 Authentication becomes mandatory.** Every request now needs an API key (header renamed to `X-Internal-Api-Key` by §7.4; originally `X-Api-Key`)
 (ADR-010). Tenant headers are unchanged in name and meaning, so the only client
 change is adding one header.
 
@@ -305,6 +375,21 @@ internally onto keyset with a `Deprecation` header, then removed.
 **7.3 Type-specific listing routes.** `/images`, `/videos`, `/documents`, `/audio`
 become aliases for `GET /api/v1/media?type=…` in Phase 2 and are sunset after
 Phase 3.
+
+**7.4 Company API Standard (ADR-015).** One coordinated change:
+
+| Change | Client action |
+|---|---|
+| Wrapper `{success, status, code, message, data, errors, meta}` | Check HTTP status / `success`, not `status == "SUCCESS"`; read `code` instead of `error.code`, `errors` instead of `error.details`, `meta.requestId` instead of `traceId` |
+| `X-Api-Key` → `X-Internal-Api-Key` | Rename the header (old name rejected) |
+| `Idempotency-Key` → `X-Idempotency-Key`, now required on creates | Rename and always send (old name ignored) |
+| `X-Trace-Id` removed | Use `X-Request-Id` |
+| Batch routes `207` → `200`; batch delete `data` is an object | Treat any 2xx as processed; read `data.results` |
+| List `limit` → `size`; `{nextCursor, hasMore}` → `pagination{size, nextCursor, hasNext}` | Rename |
+
+No compatibility window: template-service is the only caller and moves to the
+standard in the same release. **Deploy both together.** The unversioned legacy
+`/quota` route guard is removed as well (no controller served it).
 
 ## 8. Versioning
 

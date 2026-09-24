@@ -3,6 +3,7 @@ package com.aigreentick.services.storage.api.security;
 import com.aigreentick.services.storage.config.properties.SecurityProperties;
 import com.aigreentick.services.storage.domain.shared.Actor;
 import com.aigreentick.services.storage.domain.shared.TenantRef;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -26,10 +27,12 @@ import lombok.extern.slf4j.Slf4j;
 public class ApiKeyAuthenticator {
 
     private final SecurityProperties properties;
+    private final MeterRegistry meters;
     private final Map<String, ResolvedClient> byKey = new LinkedHashMap<>();
 
-    public ApiKeyAuthenticator(SecurityProperties properties) {
+    public ApiKeyAuthenticator(SecurityProperties properties, MeterRegistry meters) {
         this.properties = properties;
+        this.meters = meters;
         for (SecurityProperties.Client client : properties.clients()) {
             if (client.key() == null || client.key().isBlank()) {
                 throw new IllegalStateException(
@@ -100,6 +103,21 @@ public class ApiKeyAuthenticator {
         } catch (IllegalArgumentException e) {
             // Non-positive ids. A malformed tenant is a 401, not a 500.
             return Optional.empty();
+        }
+    }
+
+    /**
+     * {@code X-Internal-Caller} is a claim; the key is the proof. A mismatch is
+     * not rejected — the key already identified the caller — but it is logged
+     * and counted, because it means a key is shared or a caller is misconfigured.
+     */
+    public void checkDeclaredCaller(ResolvedClient client, String declaredCaller) {
+        if (declaredCaller != null && !declaredCaller.isBlank()
+                && !declaredCaller.equals(client.definition().id())) {
+            meters.counter("storage.auth.caller_mismatch", "client", client.definition().id()).increment();
+            log.warn("X-Internal-Caller '{}' does not match the client '{}' its key belongs to",
+                    declaredCaller.length() > 64 ? declaredCaller.substring(0, 64) : declaredCaller,
+                    client.definition().id());
         }
     }
 

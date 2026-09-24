@@ -59,7 +59,7 @@ logging:
     root: INFO
     com.aigreentick.services.storage: ${LOG_LEVEL:INFO}
 
-  # The MDC (traceId, requestId, orgId, projectId, userId) becomes real JSON
+  # The MDC (requestId, orgId, projectId, caller, userId) becomes real JSON
   # fields under this format rather than text inside a message, so an incident
   # is a field query. The correlation pattern in application.yml is what the
   # plain-text profiles use; here it is redundant and unused.

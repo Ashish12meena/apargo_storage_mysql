@@ -10,6 +10,7 @@ import com.aigreentick.services.storage.application.port.out.StoragePort;
 import com.aigreentick.services.storage.common.constants.ApiPaths;
 import com.aigreentick.services.storage.common.context.RequestContext;
 import com.aigreentick.services.storage.domain.exception.MediaNotFoundException;
+import com.aigreentick.services.storage.domain.exception.ServiceBusyException;
 import com.aigreentick.services.storage.domain.media.Media;
 import com.aigreentick.services.storage.domain.media.StorageKey;
 import io.swagger.v3.oas.annotations.Operation;
@@ -43,6 +44,10 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>FROZEN ROUTE. Absolute URLs built from this path are persisted in another
  * service's database, so the path may never move. Behaviour may improve.
+ *
+ * <p>A documented exception to the response wrapper (API Standard §4): success
+ * is the file itself ({@code 200}/{@code 206}/{@code 304}). Errors still use
+ * the standard wrapper.
  *
  * <p>Everything below was missing in the predecessor and each absence was a real
  * defect: no ownership check at all (the route was explicitly excluded from the
@@ -106,8 +111,8 @@ public class MediaServeController {
         }
 
         if (!streamPermits.tryAcquire()) {
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .header(HttpHeaders.RETRY_AFTER, "5").build();
+            // 503 + Retry-After in the standard error wrapper, via the handler.
+            throw new ServiceBusyException("all " + MAX_CONCURRENT_STREAMS + " stream permits in use");
         }
         try {
             audit.record(principal.tenant(), principal.asActor(clientIp()),

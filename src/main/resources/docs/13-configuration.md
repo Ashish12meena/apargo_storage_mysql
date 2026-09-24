@@ -221,12 +221,21 @@ scheduling:
 The default Spring scheduler is single-threaded, which would let a slow nightly
 job block the 1-second outbox poll. See 11-production-readiness.md § Scheduling.
 
+### `api.*` (company API Standard, ADR-015)
+
+Header names are fixed by the standard (`HeaderNames`) and are not
+configurable; `security.api-key-header` no longer exists.
+
+```yaml
+api:
+  idempotency-key-required: ${API_IDEMPOTENCY_KEY_REQUIRED:true}   # 400 IDEMPOTENCY_KEY_REQUIRED on uploads without X-Idempotency-Key
+```
+
 ### `security.*`
 
 ```yaml
 security:
   api-key-enabled: true          # false is dev-only; prod startup fails on false
-  api-key-header: X-Api-Key
 
   clients:                       # one entry per calling service
     - id: template-service

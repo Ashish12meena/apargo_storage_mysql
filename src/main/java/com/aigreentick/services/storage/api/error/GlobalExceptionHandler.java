@@ -1,49 +1,67 @@
 package com.aigreentick.services.storage.api.error;
 
+import com.aigreentick.services.storage.api.common.dto.response.ApiFieldError;
 import com.aigreentick.services.storage.api.common.dto.response.ApiResponse;
-import com.aigreentick.services.storage.api.common.dto.response.ErrorBody;
 import com.aigreentick.services.storage.common.context.RequestContext;
 import com.aigreentick.services.storage.common.error.ErrorCode;
-import com.aigreentick.services.storage.domain.exception.BatchTooLargeException;
-import com.aigreentick.services.storage.domain.exception.ContentTypeMismatchException;
-import com.aigreentick.services.storage.domain.exception.ContentTypeNotAllowedException;
+import com.aigreentick.services.storage.common.error.FieldErrorCode;
 import com.aigreentick.services.storage.domain.exception.DomainException;
-import com.aigreentick.services.storage.domain.exception.IdempotencyConflictException;
-import com.aigreentick.services.storage.domain.exception.IllegalMediaStateException;
-import com.aigreentick.services.storage.domain.exception.InvalidBatchException;
-import com.aigreentick.services.storage.domain.exception.InvalidMediaException;
-import com.aigreentick.services.storage.domain.exception.MediaNotFoundException;
-import com.aigreentick.services.storage.domain.exception.MediaTooLargeException;
-import com.aigreentick.services.storage.domain.exception.QuotaExceededException;
-import com.aigreentick.services.storage.domain.exception.QuotaNotProvisionedException;
-import com.aigreentick.services.storage.domain.exception.RequestInProgressException;
-import com.aigreentick.services.storage.domain.exception.StorageOperationException;
-import com.aigreentick.services.storage.domain.exception.TenantAccessDeniedException;
-import com.aigreentick.services.storage.domain.exception.UnsupportedStorageOperationException;
-import com.aigreentick.services.storage.domain.exception.UploadSessionExpiredException;
-import com.aigreentick.services.storage.domain.exception.UploadSessionNotFoundException;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.exc.InvalidFormatException;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Path;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.MessageSourceResolvable;
+import org.springframework.core.MethodParameter;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.Errors;
+import org.springframework.validation.method.ParameterErrors;
+import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Set;
 
 /**
- * Exception → HTTP. The single place a status code is chosen.
+ * Exception → HTTP, in the standard error wrapper (API Standard §6). The single
+ * place a status code is chosen.
  *
- * <p>Client-visible text comes from {@link ErrorCode}; the internal message goes
- * only to the log. The predecessor returned {@code ex.getMessage()} straight to
- * clients for storage and not-found errors, leaking storage keys in 404 bodies.
+ * <ul>
+ *   <li><b>{@link DomainException}</b> — every one carries an {@link ErrorCode},
+ *       and the code carries its HTTP status, so one handler renders them all.
+ *       Client text is {@link DomainException#clientMessage()}; the internal
+ *       message goes only to the log (the predecessor leaked storage keys in
+ *       404 bodies by echoing {@code getMessage()}).</li>
+ *   <li><b>400 {@code BAD_REQUEST}</b> — the request can't be read: unparseable
+ *       body, missing or unusable header.</li>
+ *   <li><b>422 {@code VALIDATION_FAILED}</b> — the request was read but a field
+ *       is invalid; details in {@code errors[]} with standard field codes.</li>
+ * </ul>
  *
  * <p>Full mapping table: docs/10-error-handling.md §3.
  */
@@ -51,250 +69,305 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class GlobalExceptionHandler {
 
-    // ── 400 ─────────────────────────────────────────────────────────────────
+    /** Codes that signal an attack or a broken client: WARN, alertable above a rate threshold. */
+    private static final Set<ErrorCode> WARN_CODES = Set.of(
+            ErrorCode.FORBIDDEN, ErrorCode.CONTENT_TYPE_MISMATCH, ErrorCode.IDEMPOTENCY_KEY_REUSED);
 
-    @ExceptionHandler(InvalidMediaException.class)
-    public ResponseEntity<ApiResponse<Void>> handleInvalidMedia(InvalidMediaException ex) {
-        log.debug("invalid media: {}", ex.getMessage());
-        return build(HttpStatus.BAD_REQUEST, ex);
+    // ── Domain ─────────────────────────────────────────────────────────────
+
+    @ExceptionHandler(DomainException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDomain(DomainException ex, HttpServletRequest request) {
+        ErrorCode code = ex.errorCode();
+        if (code.httpStatus() >= 500) {
+            log.error("{} [{}]: {}", code, code.httpStatus(), ex.getMessage(), ex);
+        } else if (WARN_CODES.contains(code)) {
+            log.warn("{} [{}]: {}", code, code.httpStatus(), ex.getMessage());
+        } else {
+            log.info("{} [{}]: {}", code, code.httpStatus(), ex.getMessage());
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        if (code == ErrorCode.IDEMPOTENCY_KEY_IN_PROGRESS) {
+            headers.set(HttpHeaders.RETRY_AFTER, "2");
+        } else if (code == ErrorCode.SERVICE_UNAVAILABLE) {
+            headers.set(HttpHeaders.RETRY_AFTER, "5");
+        }
+        return ResponseEntity.status(code.httpStatus()).headers(headers)
+                .body(envelope(code, ex.clientMessage(), List.of(), request));
     }
 
-    @ExceptionHandler(QuotaNotProvisionedException.class)
-    public ResponseEntity<ApiResponse<Void>> handleNotProvisioned(QuotaNotProvisionedException ex) {
-        // INFO, not DEBUG: this is an onboarding failure someone needs to fix.
-        log.info("quota not provisioned: {}", ex.getMessage());
-        return build(HttpStatus.BAD_REQUEST, ex);
-    }
-
-    /**
-     * An empty batch is a client mistake, most often a wrong multipart field name.
-     * It must never surface as a success envelope reporting zero results.
-     */
-    @ExceptionHandler(InvalidBatchException.class)
-    public ResponseEntity<ApiResponse<Void>> handleInvalidBatch(InvalidBatchException ex) {
-        log.debug("invalid batch: {}", ex.getMessage());
-        return build(HttpStatus.BAD_REQUEST, ex);
-    }
+    // ── 422: field validation ──────────────────────────────────────────────
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiResponse<Void>> handleValidation(MethodArgumentNotValidException ex) {
-        List<ErrorBody.FieldError> details = ex.getBindingResult().getFieldErrors().stream()
-                .map(f -> new ErrorBody.FieldError(f.getField(), "INVALID", f.getDefaultMessage()))
-                .toList();
-        log.debug("request validation failed: {} field(s)", details.size());
-        return ResponseEntity.badRequest().body(ApiResponse.error(
-                new ErrorBody(ErrorCode.REQUEST_INVALID.name(),
-                        ErrorCode.REQUEST_INVALID.defaultMessage(), details),
-                RequestContext.traceIdOrNull()));
+    public ResponseEntity<ApiResponse<Void>> handleBodyValidation(
+            MethodArgumentNotValidException ex, HttpServletRequest request) {
+        List<ApiFieldError> errors = toFieldErrors(ex.getBindingResult());
+        log.debug("body validation failed: {} field(s)", errors.size());
+        return validationFailed(errors, request);
     }
 
     /**
-     * Genuinely malformed requests — the caller sent something Spring could not
-     * bind. Each case NAMES what was wrong, because the single opaque
-     * "The request is malformed." these used to share made a missing multipart
-     * part indistinguishable from an unparseable header, and a caller had no way
-     * to tell which of six unrelated problems they had.
-     *
-     * <p>Present in the predecessor only by omission: a non-numeric path variable
-     * or header surfaced as a 500 from an unguarded {@code Long.valueOf}.
+     * Built-in method validation on headers, query parameters, path variables
+     * and — when those carry constraints — the {@code @Valid} body. Any bad
+     * header makes the whole response 400; otherwise 422 with field errors.
      */
-    @ExceptionHandler(MissingServletRequestPartException.class)
-    public ResponseEntity<ApiResponse<Void>> handleMissingPart(MissingServletRequestPartException ex) {
-        log.warn("missing multipart part '{}' — check the form-data field name and that "
-                + "Content-Type carries a boundary", ex.getRequestPartName());
-        return malformed(ex.getRequestPartName(), "MISSING_PART",
-                "Required multipart part is missing.");
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodValidation(
+            HandlerMethodValidationException ex, HttpServletRequest request) {
+
+        List<String> headerProblems = new ArrayList<>();
+        List<ApiFieldError> errors = new ArrayList<>();
+        for (ParameterValidationResult result : ex.getParameterValidationResults()) {
+            if (result instanceof ParameterErrors bodyErrors) {
+                errors.addAll(toFieldErrors(bodyErrors));
+                continue;
+            }
+            MethodParameter parameter = result.getMethodParameter();
+            RequestHeader header = parameter.getParameterAnnotation(RequestHeader.class);
+            for (MessageSourceResolvable error : result.getResolvableErrors()) {
+                if (header != null) {
+                    headerProblems.add("'" + headerName(header, parameter) + "' " + error.getDefaultMessage());
+                } else {
+                    errors.add(new ApiFieldError(requestName(parameter),
+                            FieldErrorCode.fromCodes(error.getCodes()).name(), error.getDefaultMessage()));
+                }
+            }
+        }
+        if (!headerProblems.isEmpty()) {
+            String message = "Invalid header " + String.join("; ", headerProblems);
+            log.warn("{}", message);
+            return error(ErrorCode.BAD_REQUEST, message, request);
+        }
+        log.debug("parameter validation failed: {} error(s)", errors.size());
+        return validationFailed(errors, request);
     }
 
-    @ExceptionHandler(MissingRequestHeaderException.class)
-    public ResponseEntity<ApiResponse<Void>> handleMissingHeader(MissingRequestHeaderException ex) {
-        log.warn("missing required header '{}'", ex.getHeaderName());
-        return malformed(ex.getHeaderName(), "MISSING_HEADER", "Required header is missing.");
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleConstraintViolation(
+            ConstraintViolationException ex, HttpServletRequest request) {
+        List<ApiFieldError> errors = ex.getConstraintViolations().stream()
+                .map(v -> new ApiFieldError(leafName(v), FieldErrorCode.fromConstraint(
+                        v.getConstraintDescriptor().getAnnotation().annotationType().getSimpleName()).name(),
+                        v.getMessage()))
+                .toList();
+        return validationFailed(errors, request);
+    }
+
+    /**
+     * {@code required = false} is used for the batch {@code files} part so the use
+     * case can answer {@code BATCH_FILES_REQUIRED}; every other missing part
+     * lands here.
+     */
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingPart(
+            MissingServletRequestPartException ex, HttpServletRequest request) {
+        log.warn("missing multipart part '{}' — check the form-data field name and that "
+                + "Content-Type carries a boundary", ex.getRequestPartName());
+        return validationFailed(List.of(new ApiFieldError(ex.getRequestPartName(),
+                FieldErrorCode.REQUIRED.name(), ex.getRequestPartName() + " is required")), request);
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
-    public ResponseEntity<ApiResponse<Void>> handleMissingParam(MissingServletRequestParameterException ex) {
+    public ResponseEntity<ApiResponse<Void>> handleMissingParam(
+            MissingServletRequestParameterException ex, HttpServletRequest request) {
         log.warn("missing required parameter '{}'", ex.getParameterName());
-        return malformed(ex.getParameterName(), "MISSING_PARAMETER",
-                "Required parameter is missing.");
+        return validationFailed(List.of(new ApiFieldError(ex.getParameterName(),
+                FieldErrorCode.REQUIRED.name(), ex.getParameterName() + " is required")), request);
     }
 
+    /** Headers are 400 (the request can't be used); query and path values are 422. */
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        MethodParameter parameter = ex.getParameter();
+        RequestHeader header = parameter.getParameterAnnotation(RequestHeader.class);
         log.warn("parameter '{}' could not be converted from value [{}]", ex.getName(), ex.getValue());
-        return malformed(ex.getName(), "TYPE_MISMATCH", "Value is not of the expected type.");
+        if (header != null) {
+            return error(ErrorCode.BAD_REQUEST,
+                    "Invalid header '" + headerName(header, parameter) + "'", request);
+        }
+        String name = requestName(parameter);
+        Class<?> type = ex.getRequiredType();
+        String message = type != null && type.isEnum()
+                ? name + " must be one of " + Arrays.toString(type.getEnumConstants())
+                : name + " has an invalid value";
+        return validationFailed(List.of(new ApiFieldError(name, FieldErrorCode.INVALID_VALUE.name(), message)),
+                request);
     }
 
+    // ── 400: unreadable request ────────────────────────────────────────────
+
+    /** Unparseable JSON is 400; a wrong-typed field in valid JSON is a 422 on that field. */
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<ApiResponse<Void>> handleUnreadableBody(HttpMessageNotReadableException ex) {
+    public ResponseEntity<ApiResponse<Void>> handleUnreadableBody(
+            HttpMessageNotReadableException ex, HttpServletRequest request) {
         log.warn("unreadable request body: {}", ex.getMostSpecificCause().toString());
-        return malformed("body", "UNREADABLE", "The request body could not be parsed.");
+        if (ex.getCause() instanceof MismatchedInputException mie && !mie.getPath().isEmpty()) {
+            String field = jsonPath(mie.getPath());
+            Class<?> target = mie.getTargetType();
+            String message = mie instanceof InvalidFormatException && target != null && target.isEnum()
+                    ? field + " must be one of " + Arrays.toString(target.getEnumConstants())
+                    : field + " has an invalid value";
+            return validationFailed(List.of(new ApiFieldError(field, FieldErrorCode.INVALID_VALUE.name(), message)),
+                    request);
+        }
+        return error(ErrorCode.BAD_REQUEST, "Request body is missing or is not valid JSON.", request);
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingHeader(
+            MissingRequestHeaderException ex, HttpServletRequest request) {
+        log.warn("missing required header '{}'", ex.getHeaderName());
+        return error(ErrorCode.BAD_REQUEST, "Missing required header '" + ex.getHeaderName() + "'", request);
     }
 
     /**
-     * A RAW {@code IllegalArgumentException}, which is NOT the same thing as a
-     * malformed request.
-     *
-     * <p>The domain throws bare {@code IllegalArgumentException} from several
-     * value objects — {@code TenantRef}, {@code ByteSize}, {@code StorageKey},
-     * {@code Checksum}, {@code MediaType.fromValue}. When this was bundled with
-     * the binding failures above, any one of those surfaced to the caller as
-     * "The request is malformed." even when the request was perfectly well formed
-     * and the DOMAIN had rejected it. That is actively misleading, and it hid
-     * where the failure actually was.
-     *
-     * <p>Logged at ERROR with the stack trace on purpose: reaching here means a
-     * value object rejected input that should have been validated earlier, so the
-     * stack trace names the guard that should exist. Every occurrence is a bug to
-     * fix, not a caller mistake to report.
+     * A RAW {@code IllegalArgumentException}: a domain value object
+     * ({@code MediaId}, {@code TenantRef}, {@code ByteSize}, ...) rejected input
+     * that should have been validated earlier. 400 to the caller; ERROR with the
+     * stack trace to the log, because the trace names the missing guard.
      */
     @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException ex) {
-        log.error("unguarded IllegalArgumentException [trace={}]: {}",
-                RequestContext.traceIdOrNull(), ex.getMessage(), ex);
-        return build(HttpStatus.BAD_REQUEST, ErrorCode.REQUEST_INVALID);
+    public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(
+            IllegalArgumentException ex, HttpServletRequest request) {
+        log.error("unguarded IllegalArgumentException [req={}]: {}",
+                RequestContext.requestIdOrNull(), ex.getMessage(), ex);
+        return error(ErrorCode.BAD_REQUEST, ErrorCode.BAD_REQUEST.defaultMessage(), request);
     }
 
-    /**
-     * REQUEST_INVALID naming the offending field in {@code details}, reusing the
-     * same {@link ErrorBody.FieldError} shape that bean-validation failures
-     * already return, so a client parses one structure for both.
-     */
-    private ResponseEntity<ApiResponse<Void>> malformed(String field, String code, String message) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(
-                new ErrorBody(ErrorCode.REQUEST_INVALID.name(),
-                        ErrorCode.REQUEST_INVALID.defaultMessage(),
-                        List.of(new ErrorBody.FieldError(field, code, message))),
-                RequestContext.traceIdOrNull()));
+    // ── Protocol-level ─────────────────────────────────────────────────────
+
+    @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+    public ResponseEntity<ApiResponse<Void>> handleNoRoute(Exception ex, HttpServletRequest request) {
+        log.debug("no handler for {} {}", request.getMethod(), request.getRequestURI());
+        return error(ErrorCode.NOT_FOUND, ErrorCode.NOT_FOUND.defaultMessage(), request);
     }
 
-    // ── 403 / 404 ───────────────────────────────────────────────────────────
-
-    @ExceptionHandler(TenantAccessDeniedException.class)
-    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(TenantAccessDeniedException ex) {
-        // WARN: either an attack or a broken client. Alertable above a rate threshold.
-        log.warn("access denied: {}", ex.getMessage());
-        return build(HttpStatus.FORBIDDEN, ex);
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        HttpHeaders headers = new HttpHeaders();
+        if (ex.getSupportedHttpMethods() != null) {
+            headers.setAllow(ex.getSupportedHttpMethods());
+        }
+        return ResponseEntity.status(ErrorCode.METHOD_NOT_ALLOWED.httpStatus()).headers(headers)
+                .body(envelope(ErrorCode.METHOD_NOT_ALLOWED,
+                        ErrorCode.METHOD_NOT_ALLOWED.defaultMessage(), List.of(), request));
     }
 
-    @ExceptionHandler({MediaNotFoundException.class, UploadSessionNotFoundException.class,
-            NoHandlerFoundException.class})
-    public ResponseEntity<ApiResponse<Void>> handleNotFound(Exception ex) {
-        log.debug("not found: {}", ex.getMessage());
-        return ex instanceof DomainException de
-                ? build(HttpStatus.NOT_FOUND, de)
-                : build(HttpStatus.NOT_FOUND, ErrorCode.MEDIA_NOT_FOUND);
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnsupportedMediaType(
+            HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+        return error(ErrorCode.UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type '" + ex.getContentType() + "' is not supported; use " + ex.getSupportedMediaTypes(),
+                request);
     }
 
-    // ── 409 ─────────────────────────────────────────────────────────────────
-
-    @ExceptionHandler(IllegalMediaStateException.class)
-    public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalMediaStateException ex) {
-        log.info("illegal state: {}", ex.getMessage());
-        return build(HttpStatus.CONFLICT, ex);
-    }
-
-    @ExceptionHandler(RequestInProgressException.class)
-    public ResponseEntity<ApiResponse<Void>> handleInProgress(RequestInProgressException ex) {
-        log.debug("duplicate request in flight: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.CONFLICT)
-                .header("Retry-After", "2")
-                .body(ApiResponse.error(ErrorBody.of(ex.errorCode().name(), ex.clientMessage()),
-                        RequestContext.traceIdOrNull()));
-    }
-
-    @ExceptionHandler(UploadSessionExpiredException.class)
-    public ResponseEntity<ApiResponse<Void>> handleSessionExpired(UploadSessionExpiredException ex) {
-        log.info("upload session expired: {}", ex.getMessage());
-        return build(HttpStatus.CONFLICT, ex);
-    }
-
-    // ── 413 / 415 / 422 ─────────────────────────────────────────────────────
-
-    @ExceptionHandler(MediaTooLargeException.class)
-    public ResponseEntity<ApiResponse<Void>> handleTooLarge(MediaTooLargeException ex) {
-        log.debug("file too large: {}", ex.getMessage());
-        return build(HttpStatus.PAYLOAD_TOO_LARGE, ex);
-    }
-
-    /** Too many files. 413, alongside the per-file size ceiling. */
-    @ExceptionHandler(BatchTooLargeException.class)
-    public ResponseEntity<ApiResponse<Void>> handleBatchTooLarge(BatchTooLargeException ex) {
-        log.debug("batch too large: {}", ex.getMessage());
-        return build(HttpStatus.PAYLOAD_TOO_LARGE, ex);
-    }
-
+    /** Container multipart ceiling (max-file-size / max-request-size). */
     @ExceptionHandler(MaxUploadSizeExceededException.class)
-    public ResponseEntity<ApiResponse<Void>> handleMaxUpload(MaxUploadSizeExceededException ex) {
+    public ResponseEntity<ApiResponse<Void>> handleMaxUpload(
+            MaxUploadSizeExceededException ex, HttpServletRequest request) {
         log.debug("multipart limit exceeded: {}", ex.getMessage());
-        return build(HttpStatus.PAYLOAD_TOO_LARGE, ErrorCode.MEDIA_TOO_LARGE);
+        return error(ErrorCode.MEDIA_TOO_LARGE, ErrorCode.MEDIA_TOO_LARGE.defaultMessage(), request);
     }
-
-    @ExceptionHandler(ContentTypeNotAllowedException.class)
-    public ResponseEntity<ApiResponse<Void>> handleTypeNotAllowed(ContentTypeNotAllowedException ex) {
-        log.info("content type not allowed: {}", ex.getMessage());
-        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, ex);
-    }
-
-    @ExceptionHandler(ContentTypeMismatchException.class)
-    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(ContentTypeMismatchException ex) {
-        // WARN: a mismatch is a signal, possibly an attack, not a formatting problem.
-        log.warn("content type mismatch: {}", ex.getMessage());
-        return build(HttpStatus.UNPROCESSABLE_ENTITY, ex);
-    }
-
-    @ExceptionHandler(IdempotencyConflictException.class)
-    public ResponseEntity<ApiResponse<Void>> handleIdempotencyConflict(IdempotencyConflictException ex) {
-        log.warn("idempotency key reused with a different payload: {}", ex.getMessage());
-        return build(HttpStatus.UNPROCESSABLE_ENTITY, ex);
-    }
-
-    // ── 500 / 502 / 507 ─────────────────────────────────────────────────────
 
     /**
-     * 507 is preserved deliberately from the predecessor for downstream
-     * compatibility, despite 429 arguably being more conventional.
+     * Safety net. A remaining Spring MVC exception already knows its 4xx status;
+     * anything else is a 500 with a generic message — an exception message can
+     * hold a storage key, a path or SQL.
      */
-    @ExceptionHandler(QuotaExceededException.class)
-    public ResponseEntity<ApiResponse<Void>> handleQuotaExceeded(QuotaExceededException ex) {
-        log.info("quota exceeded: {}", ex.getMessage());
-        return build(HttpStatus.INSUFFICIENT_STORAGE, ex);
-    }
-
-    @ExceptionHandler(StorageOperationException.class)
-    public ResponseEntity<ApiResponse<Void>> handleStorage(StorageOperationException ex) {
-        // Full detail to the log; the client gets only the generic message.
-        log.error("storage operation failed: {}", ex.getMessage(), ex);
-        return build(HttpStatus.BAD_GATEWAY, ex);
-    }
-
-    @ExceptionHandler(UnsupportedStorageOperationException.class)
-    public ResponseEntity<ApiResponse<Void>> handleUnsupported(UnsupportedStorageOperationException ex) {
-        log.warn("unsupported storage operation: {}", ex.getMessage());
-        return build(HttpStatus.NOT_IMPLEMENTED, ex);
-    }
-
-    @ExceptionHandler(DomainException.class)
-    public ResponseEntity<ApiResponse<Void>> handleDomain(DomainException ex) {
-        log.error("unmapped domain exception: {}", ex.getMessage(), ex);
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, ex);
-    }
-
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception ex) {
+    public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception ex, HttpServletRequest request) {
+        if (ex instanceof ErrorResponse springError && springError.getStatusCode().is4xxClientError()) {
+            HttpStatusCode reported = springError.getStatusCode();
+            ErrorCode code = ErrorCode.forStatus(reported.value());
+            HttpStatus resolved = HttpStatus.resolve(reported.value());
+            int status = resolved != null ? resolved.value() : code.httpStatus();
+            log.warn("{} on {}: {}", status, request.getRequestURI(), ex.getMessage());
+            return ResponseEntity.status(status).body(ApiResponse.error(status, code.name(),
+                    resolved != null ? resolved.getReasonPhrase() : code.defaultMessage(),
+                    List.of(), request.getRequestURI()));
+        }
         log.error("unexpected error", ex);
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL_ERROR);
+        return error(ErrorCode.INTERNAL_ERROR, ErrorCode.INTERNAL_ERROR.defaultMessage(), request);
     }
 
-    // ── helpers ─────────────────────────────────────────────────────────────
+    // ── helpers ────────────────────────────────────────────────────────────
 
-    private ResponseEntity<ApiResponse<Void>> build(HttpStatus status, DomainException ex) {
-        return ResponseEntity.status(status).body(ApiResponse.error(
-                ErrorBody.of(ex.errorCode().name(), ex.clientMessage()), RequestContext.traceIdOrNull()));
+    private ResponseEntity<ApiResponse<Void>> validationFailed(List<ApiFieldError> errors, HttpServletRequest request) {
+        return ResponseEntity.status(ErrorCode.VALIDATION_FAILED.httpStatus()).body(envelope(
+                ErrorCode.VALIDATION_FAILED, ErrorCode.VALIDATION_FAILED.defaultMessage(), errors, request));
     }
 
-    private ResponseEntity<ApiResponse<Void>> build(HttpStatus status, ErrorCode code) {
-        return ResponseEntity.status(status).body(ApiResponse.error(
-                ErrorBody.of(code.name(), code.defaultMessage()), RequestContext.traceIdOrNull()));
+    private ResponseEntity<ApiResponse<Void>> error(ErrorCode code, String message, HttpServletRequest request) {
+        return ResponseEntity.status(code.httpStatus()).body(envelope(code, message, List.of(), request));
+    }
+
+    private ApiResponse<Void> envelope(ErrorCode code, String message, List<ApiFieldError> errors,
+                                       HttpServletRequest request) {
+        return ApiResponse.error(code.httpStatus(), code.name(), message, errors, request.getRequestURI());
+    }
+
+    private List<ApiFieldError> toFieldErrors(Errors errors) {
+        List<ApiFieldError> result = new ArrayList<>();
+        errors.getFieldErrors().forEach(fe -> result.add(new ApiFieldError(
+                fe.getField(), FieldErrorCode.fromConstraint(fe.getCode()).name(), fe.getDefaultMessage())));
+        errors.getGlobalErrors().forEach(ge -> result.add(new ApiFieldError(
+                ge.getObjectName(), FieldErrorCode.fromConstraint(ge.getCode()).name(), ge.getDefaultMessage())));
+        return result;
+    }
+
+    private String requestName(MethodParameter parameter) {
+        RequestParam param = parameter.getParameterAnnotation(RequestParam.class);
+        if (param != null) {
+            String declared = firstNonBlank(param.name(), param.value());
+            if (declared != null) {
+                return declared;
+            }
+        }
+        PathVariable path = parameter.getParameterAnnotation(PathVariable.class);
+        if (path != null) {
+            String declared = firstNonBlank(path.name(), path.value());
+            if (declared != null) {
+                return declared;
+            }
+        }
+        String name = parameter.getParameterName();
+        return name != null ? name : "parameter";
+    }
+
+    private String headerName(RequestHeader header, MethodParameter parameter) {
+        String declared = firstNonBlank(header.name(), header.value());
+        return declared != null ? declared : String.valueOf(parameter.getParameterName());
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) {
+            return a;
+        }
+        return b != null && !b.isBlank() ? b : null;
+    }
+
+    private String jsonPath(List<JsonMappingException.Reference> path) {
+        StringBuilder sb = new StringBuilder();
+        for (JsonMappingException.Reference ref : path) {
+            if (ref.getFieldName() != null) {
+                if (!sb.isEmpty()) {
+                    sb.append('.');
+                }
+                sb.append(ref.getFieldName());
+            } else {
+                sb.append('[').append(ref.getIndex()).append(']');
+            }
+        }
+        return sb.toString();
+    }
+
+    private String leafName(ConstraintViolation<?> violation) {
+        String leaf = null;
+        for (Path.Node node : violation.getPropertyPath()) {
+            leaf = node.getName();
+        }
+        return leaf != null ? leaf : "parameter";
     }
 }

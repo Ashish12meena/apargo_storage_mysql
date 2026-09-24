@@ -57,7 +57,7 @@ import java.util.Set;
  *                      caller to write arbitrary volume into your log storage.
  * @param includeClientIp record the TCP peer address. This is the peer, not
  *                      {@code X-Forwarded-For} — behind a proxy it is the
- *                      proxy's address. See {@code TraceContextFilter} for why
+ *                      proxy's address. See {@code RequestIdFilter} for why
  *                      that header is not trusted.
  * @param includeHeaders record request headers named in {@link #headers()}.
  *                      OFF by default.
@@ -81,7 +81,7 @@ public record RequestLoggingProperties(
         @DefaultValue("256") int maxQueryLength,
         @DefaultValue("true") boolean includeClientIp,
         @DefaultValue("false") boolean includeHeaders,
-        @DefaultValue({"X-Request-Id", "X-Trace-Id", "Idempotency-Key",
+        @DefaultValue({"X-Request-Id", "X-Idempotency-Key", "X-Internal-Caller", "X-User-Id",
                 "Content-Type", "User-Agent"}) List<String> headers,
         @DefaultValue({"/actuator", "/swagger-ui", "/v3/api-docs", "/favicon.ico"})
         List<String> excludePaths) {

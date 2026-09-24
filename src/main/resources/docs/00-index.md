@@ -36,7 +36,7 @@ and a security model asserted in comments rather than enforced in code.
 | 13 | [configuration.md](13-configuration.md) | Every property, every secret, every default |
 | 14 | [implementation-phases.md](14-implementation-phases.md) | Phased plan with exit criteria |
 | 15 | [implementation-status.md](15-implementation-status.md) | **Live.** Done / doing / next / blocked |
-| 16 | [adr/](adr/) | Architecture decisions and their rationale |
+| 16 | [adr/](adr/) | Architecture decisions and their rationale (ADR-015: company API Standard) |
 | 17 | [risks-assumptions.md](17-risks-assumptions.md) | What could bite us, what we are assuming |
 | 18 | [definition-of-done.md](18-definition-of-done.md) | When a phase is actually finished |
 

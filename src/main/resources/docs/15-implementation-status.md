@@ -3,7 +3,7 @@
 > **LIVE DOCUMENT.** Updated at the end of every work item, before the next one
 > starts. If this is stale, the process has already broken.
 
-**Last updated:** 2026-08-23 (auth model changed)
+**Last updated:** 2026-09-24 (company API Standard adopted — ADR-015)
 **Current phase:** Phase 1 + Phase 2 implemented · parts of Phase 3 implemented
 **Overall:** Full implementation of the core service. Not yet built or tested —
 see **Verification status** below, which is the most important section on this page.
@@ -26,6 +26,22 @@ green build as the real start of Phase 1.
 ---
 
 ## ✅ Completed
+
+### Company API Standard (2026-09-24, ADR-015)
+
+| Item | Where |
+|---|---|
+| Standard wrapper `{success, status, code, message, data, errors, meta}` for every JSON response, filters included | `api/common`, `api/error` |
+| `ErrorCode` carries its HTTP status; single `DomainException` handler; 400 vs 422 split; `/error` in the wrapper | `common/error`, `api/error` |
+| `X-Request-Id` only (no `X-Trace-Id`); `X-User-Id` in MDC; `X-Internal-Api-Key` + `X-Internal-Caller` | `RequestIdFilter`, `SecurityProperties`, `ApiKeyAuthenticator` |
+| Strict standard header names only — no aliases for `X-Api-Key` / `Idempotency-Key`; dead `/quota` legacy route guard removed | `HeaderNames`, filters |
+| `X-Idempotency-Key` required on upload / batch / initiate | `IdempotencyKeyInterceptor` |
+| 201 + `Location`; batch routes 200; cursor paging `size` + `pagination{size,nextCursor,hasNext}`; teardown 202 `{jobId,statusUrl}`; serve 503 in wrapper | controllers |
+| Fixed: 429 lost `Retry-After` (`response.reset()`); `QUOTA_LIMIT_INVALID` was a 500 | `ErrorResponseWriter`, `ErrorCode` |
+| Contract tests (first tests in the repo) | `src/test/.../api` |
+
+Not compiled in the authoring environment (no Maven Central); run
+`mvn -B clean verify` first.
 
 ### Documentation (this phase)
 
@@ -156,7 +172,7 @@ exposures in the **predecessor** service, which is still deployed.
 |---|---|---|---|---|
 | ~~**BL-1**~~ | ~~Production cutover to JWT-only auth~~ | **RESOLVED 2026-08-23 — no longer blocked.** JWT withdrawn in favour of per-service API keys (ADR-010). No gateway dependency remains. | — | — |
 | **BL-2** | Credential rotation (0.1–0.3) | Needs AWS console access and a maintenance window for the force-push | **Highest severity.** A live-format key is in the repository right now. | Platform / Security |
-| **BL-3** | Internal API auth | Organisation-service team must send `X-Api-Key` with a `quota:admin` key | Coordinated deploy; breaking otherwise. Simpler than the withdrawn JWT plan — one header. | Org service team |
+| **BL-3** | Internal API auth | Organisation-service team must send `X-Internal-Api-Key` with a `quota:admin` key | Coordinated deploy; breaking otherwise. Simpler than the withdrawn JWT plan — one header. | Org service team |
 | **BL-4** | Removing WhatsApp push (ADR-009) | WABA team must agree to consume `media.created` | Falls back to the transitional shim if declined. | WABA team |
 
 ---

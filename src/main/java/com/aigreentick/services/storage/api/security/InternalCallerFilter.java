@@ -2,9 +2,8 @@ package com.aigreentick.services.storage.api.security;
 
 import com.aigreentick.services.storage.api.error.ErrorResponseWriter;
 import com.aigreentick.services.storage.common.constants.ApiPaths;
-import com.aigreentick.services.storage.common.context.RequestContext;
+import com.aigreentick.services.storage.common.constants.HeaderNames;
 import com.aigreentick.services.storage.common.error.ErrorCode;
-import com.aigreentick.services.storage.config.properties.SecurityProperties;
 import com.aigreentick.services.storage.domain.shared.Actor;
 import com.aigreentick.services.storage.domain.shared.TenantRef;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -12,8 +11,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import com.aigreentick.services.storage.infrastructure.observability.TraceContextFilter;
-import org.springframework.http.HttpStatus;
+import com.aigreentick.services.storage.infrastructure.observability.RequestIdFilter;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -45,14 +43,12 @@ public class InternalCallerFilter extends OncePerRequestFilter {
     private static final TenantRef ADMIN_SCOPE = new TenantRef(1L, 1L);
 
     private final ApiKeyAuthenticator authenticator;
-    private final SecurityProperties properties;
     private final ErrorResponseWriter errorWriter;
     private final MeterRegistry meters;
 
-    public InternalCallerFilter(ApiKeyAuthenticator authenticator, SecurityProperties properties,
+    public InternalCallerFilter(ApiKeyAuthenticator authenticator,
                                 ErrorResponseWriter errorWriter, MeterRegistry meters) {
         this.authenticator = authenticator;
-        this.properties = properties;
         this.errorWriter = errorWriter;
         this.meters = meters;
     }
@@ -60,7 +56,7 @@ public class InternalCallerFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return !(path.startsWith(ApiPaths.INTERNAL) || path.startsWith(ApiPaths.LEGACY_QUOTA));
+        return !path.startsWith(ApiPaths.INTERNAL);
     }
 
     @Override
@@ -70,20 +66,22 @@ public class InternalCallerFilter extends OncePerRequestFilter {
             if (!authenticator.enabled()) {
                 TenantContext.set(new TenantPrincipal(ADMIN_SCOPE, "auth-disabled",
                         java.util.EnumSet.allOf(Scope.class), null, Actor.ActorType.SERVICE, true));
-                TraceContextFilter.enrichMdc();
+                RequestIdFilter.enrichMdc();
                 chain.doFilter(request, response);
                 return;
             }
 
             Optional<ApiKeyAuthenticator.ResolvedClient> client =
-                    authenticator.authenticate(request.getHeader(properties.apiKeyHeader()));
+                    authenticator.authenticate(request.getHeader(HeaderNames.INTERNAL_API_KEY));
 
             if (client.isEmpty()) {
-                reject(response, "missing_or_unknown_api_key", request);
+                reject(response, "missing_or_unknown_api_key", request, ErrorCode.UNAUTHENTICATED);
                 return;
             }
+            authenticator.checkDeclaredCaller(client.get(), request.getHeader(HeaderNames.INTERNAL_CALLER));
             if (!client.get().scopes().contains(Scope.QUOTA_ADMIN)) {
-                reject(response, "insufficient_scope", request);
+                // Authenticated but not allowed: 403, not 401 (API Standard §6).
+                reject(response, "insufficient_scope", request, ErrorCode.FORBIDDEN);
                 return;
             }
 
@@ -91,19 +89,18 @@ public class InternalCallerFilter extends OncePerRequestFilter {
                     client.get().scopes(), null, Actor.ActorType.SERVICE, false));
             // The caller id is the only identity an internal call has; without
             // this it never reaches a log line.
-            TraceContextFilter.enrichMdc();
+            RequestIdFilter.enrichMdc();
             chain.doFilter(request, response);
         } finally {
             TenantContext.clear();
         }
     }
 
-    private void reject(HttpServletResponse response, String reason, HttpServletRequest request)
-            throws IOException {
+    private void reject(HttpServletResponse response, String reason, HttpServletRequest request,
+                        ErrorCode code) throws IOException {
         meters.counter("storage.auth.rejected", "reason", reason, "surface", "internal").increment();
         log.warn("internal API call rejected ({}) path={} remote={}",
                 reason, request.getRequestURI(), request.getRemoteAddr());
-        errorWriter.write(response, HttpStatus.UNAUTHORIZED.value(),
-                ErrorCode.UNAUTHENTICATED, RequestContext.traceIdOrNull());
+        errorWriter.write(request, response, code);
     }
 }

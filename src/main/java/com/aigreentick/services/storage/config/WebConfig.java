@@ -1,5 +1,7 @@
 package com.aigreentick.services.storage.config;
 
+import com.aigreentick.services.storage.api.security.IdempotencyKeyInterceptor;
+import com.aigreentick.services.storage.common.constants.ApiPaths;
 import com.aigreentick.services.storage.config.properties.CorsProperties;
 import jakarta.annotation.PostConstruct;
 import org.springframework.context.annotation.Bean;
@@ -7,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import lombok.extern.slf4j.Slf4j;
 
@@ -15,9 +18,17 @@ import lombok.extern.slf4j.Slf4j;
 public class WebConfig implements WebMvcConfigurer {
 
     private final CorsProperties cors;
+    private final IdempotencyKeyInterceptor idempotencyKeyInterceptor;
 
-    public WebConfig(CorsProperties cors) {
+    public WebConfig(CorsProperties cors, IdempotencyKeyInterceptor idempotencyKeyInterceptor) {
         this.cors = cors;
+        this.idempotencyKeyInterceptor = idempotencyKeyInterceptor;
+    }
+
+    /** Enforces X-Idempotency-Key on {@code @RequiresIdempotencyKey} handlers only. */
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(idempotencyKeyInterceptor).addPathPatterns(ApiPaths.API_V1 + "/**");
     }
 
     /** The effective policy on the log, so it is never inferred from a browser console. */
@@ -43,7 +54,7 @@ public class WebConfig implements WebMvcConfigurer {
      * <p>{@code allowedOrigins("*")} combined with credentials throws
      * {@code IllegalArgumentException} from {@code AbstractHandlerMapping#getHandler}.
      * That runs on EVERY request before any controller, so the failure presents as
-     * the whole API returning {@code 400 REQUEST_INVALID} — including endpoints
+     * the whole API returning {@code 400} — including endpoints
      * that take no parameters at all — with nothing in the response mentioning
      * CORS. It is a genuinely hard failure to trace back to a config line.
      *

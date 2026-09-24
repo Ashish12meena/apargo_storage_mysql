@@ -21,3 +21,4 @@ Format: Context → Decision → Consequences → Alternatives rejected.
 | [012](ADR-012-limit-profiles.md) | Per-file limits global; only capacity per-tenant | Accepted |
 | [013](ADR-013-no-structural-validation.md) | No structural file validation | Accepted |
 | [014](ADR-014-scanning-optional.md) | Malware scanning wired but disabled by default | Accepted |
+| [015](ADR-015-company-api-standard.md) | Adopt the company API Standard (wrapper, headers, status codes, paging) | Accepted |

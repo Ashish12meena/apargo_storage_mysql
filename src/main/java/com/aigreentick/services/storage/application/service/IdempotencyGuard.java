@@ -34,7 +34,7 @@ public class IdempotencyGuard {
     }
 
     /**
-     * @param key    client-supplied {@code Idempotency-Key}; when null the
+     * @param key    client-supplied {@code X-Idempotency-Key}; when null the
      *               operation runs unguarded
      * @param replay resolves a previously-stored media id back to a result
      * @param action the operation itself, returning the media id and the result
@@ -47,7 +47,7 @@ public class IdempotencyGuard {
             return action.get().result();
         }
 
-        // Throws IdempotencyConflictException (422) when the same key arrives with
+        // Throws IdempotencyConflictException (409 IDEMPOTENCY_KEY_REUSED) when the same key arrives with
         // a different payload — silently replaying the wrong response would be worse.
         Optional<IdempotencyPort.StoredResponse> existing =
                 idempotency.beginOrReplay(tenant, key, requestHash);

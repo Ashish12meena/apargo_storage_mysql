@@ -1,6 +1,7 @@
 package com.aigreentick.services.storage.api.internal.quota;
 
 import com.aigreentick.services.storage.api.internal.quota.dto.request.ProvisionQuotaRequest;
+import com.aigreentick.services.storage.api.common.Responses;
 import com.aigreentick.services.storage.api.common.dto.response.ApiResponse;
 import com.aigreentick.services.storage.api.v1.quota.dto.response.QuotaResponse;
 import com.aigreentick.services.storage.api.v1.quota.mapper.QuotaDtoMapper;
@@ -27,9 +28,14 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * {@code /internal/quota} — provisioning, called by the organisation service.
  *
- * <p>Request and response shapes are preserved exactly from the predecessor. Only
- * the authentication requirement changes, and that is enforced upstream by
- * {@code InternalCallerFilter} — this surface previously had none at all.
+ * <p>Payload shapes are preserved from the predecessor; responses use the
+ * standard wrapper. Authentication is enforced upstream by
+ * {@code InternalCallerFilter}.
+ *
+ * <p><b>Documented exception to "tenant only from headers":</b> this is an admin
+ * surface. The org/project in the path or body is the TARGET resource being
+ * provisioned, not the tenant the caller acts for, so it stays in the resource
+ * identity (path) and payload.
  */
 @RestController
 @RequestMapping(ApiPaths.INTERNAL_QUOTA)
@@ -51,8 +57,7 @@ public class InternalQuotaController {
 
         var view = quotaUseCase.provision(new ProvisionQuotaCommand(
                 QuotaScope.ORG, request.orgId(), null, ByteSize.of(request.maxBytes()), serviceActor()));
-        return ResponseEntity.ok(ApiResponse.success("Org quota provisioned",
-                mapper.toResponse(view), RequestContext.traceIdOrNull()));
+        return Responses.ok("Org quota provisioned", mapper.toResponse(view));
     }
 
     @PutMapping("/project")
@@ -63,24 +68,21 @@ public class InternalQuotaController {
         var view = quotaUseCase.provision(new ProvisionQuotaCommand(
                 QuotaScope.PROJECT, request.orgId(), request.projectId(),
                 ByteSize.of(request.maxBytes()), serviceActor()));
-        return ResponseEntity.ok(ApiResponse.success("Project quota provisioned",
-                mapper.toResponse(view), RequestContext.traceIdOrNull()));
+        return Responses.ok("Project quota provisioned", mapper.toResponse(view));
     }
 
     @GetMapping("/org/{orgId}")
     @Operation(summary = "Read an organisation's quota")
     public ResponseEntity<ApiResponse<QuotaResponse>> getOrgQuota(@PathVariable long orgId) {
-        return ResponseEntity.ok(ApiResponse.success(null,
-                mapper.toResponse(quotaUseCase.getOrgQuota(orgId)), RequestContext.traceIdOrNull()));
+        return Responses.ok("Quota fetched", mapper.toResponse(quotaUseCase.getOrgQuota(orgId)));
     }
 
     @GetMapping("/project/{orgId}/{projectId}")
     @Operation(summary = "Read a project's quota")
     public ResponseEntity<ApiResponse<QuotaResponse>> getProjectQuota(
             @PathVariable long orgId, @PathVariable long projectId) {
-        return ResponseEntity.ok(ApiResponse.success(null,
-                mapper.toResponse(quotaUseCase.getProjectQuota(new TenantRef(orgId, projectId))),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Quota fetched",
+                mapper.toResponse(quotaUseCase.getProjectQuota(new TenantRef(orgId, projectId))));
     }
 
     private Actor serviceActor() {

@@ -1,6 +1,8 @@
 package com.aigreentick.services.storage.api.internal.media;
 
+import com.aigreentick.services.storage.api.common.Responses;
 import com.aigreentick.services.storage.api.common.dto.response.ApiResponse;
+import com.aigreentick.services.storage.api.internal.media.dto.TeardownAcceptedResponse;
 import com.aigreentick.services.storage.api.security.MediaAccessGuard;
 import com.aigreentick.services.storage.api.security.Scope;
 import com.aigreentick.services.storage.api.security.TenantContext;
@@ -11,7 +13,6 @@ import com.aigreentick.services.storage.common.context.RequestContext;
 import com.aigreentick.services.storage.domain.shared.Actor;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -19,7 +20,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
 
 /**
  * {@code /internal/media} — tenant offboarding.
@@ -50,7 +50,7 @@ public class InternalMediaController {
 
     @DeleteMapping("/project/{orgId}/{projectId}")
     @Operation(summary = "Remove every file in a project, asynchronously")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> teardownProject(
+    public ResponseEntity<ApiResponse<TeardownAcceptedResponse>> teardownProject(
             @PathVariable long orgId,
             @PathVariable long projectId,
             @RequestParam(defaultValue = "false") boolean permanent) {
@@ -66,28 +66,26 @@ public class InternalMediaController {
      */
     @DeleteMapping("/org/{orgId}")
     @Operation(summary = "Remove every file in an organisation, asynchronously")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> teardownOrg(
+    public ResponseEntity<ApiResponse<TeardownAcceptedResponse>> teardownOrg(
             @PathVariable long orgId,
             @RequestParam(defaultValue = "false") boolean permanent) {
 
         return accept(new TeardownTenantCommand(orgId, null, permanent, actor()), "ORG");
     }
 
-    private ResponseEntity<ApiResponse<Map<String, Object>>> accept(TeardownTenantCommand command,
-                                                                    String scope) {
+    private ResponseEntity<ApiResponse<TeardownAcceptedResponse>> accept(TeardownTenantCommand command,
+                                                                        String scope) {
         guard.requireScope(TenantContext.require(), Scope.TENANT_TEARDOWN);
         String handle = teardownUseCase.requestTeardown(command);
 
         // 202, not 200: the work has been accepted, not performed. Reporting
         // success before the files are gone would be a lie a compliance auditor
         // could act on.
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.success(
-                "Teardown accepted; processing asynchronously",
-                Map.of("handle", handle,
-                        "scope", scope,
-                        "permanent", command.permanent(),
-                        "status", "ACCEPTED"),
-                RequestContext.traceIdOrNull()));
+        String statusUrl = command.projectId() == null
+                ? ApiPaths.INTERNAL_QUOTA + "/org/" + command.orgId()
+                : ApiPaths.INTERNAL_QUOTA + "/project/" + command.orgId() + "/" + command.projectId();
+        return Responses.accepted("Teardown accepted; processing asynchronously",
+                new TeardownAcceptedResponse(handle, statusUrl, scope, command.permanent()));
     }
 
     private Actor actor() {

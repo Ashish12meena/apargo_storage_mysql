@@ -21,9 +21,10 @@ public final class RequestContext {
         return HOLDER.get();
     }
 
-    public static String traceIdOrNull() {
+    /** The request's {@code X-Request-Id}, or null outside a request. */
+    public static String requestIdOrNull() {
         RequestContextData data = HOLDER.get();
-        return data == null ? null : data.traceId();
+        return data == null ? null : data.requestId();
     }
 
     public static void clear() {

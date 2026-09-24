@@ -2,101 +2,92 @@
 
 ## 1. Principles
 
-1. **Every error carries a stable code.** Clients branch on `error.code`, never on
-   `message`. Today only the message exists, so any wording improvement silently
-   breaks a consumer.
-2. **Internal detail never reaches the client.** The current handler returns
-   `ex.getMessage()` directly for storage and not-found errors, and those messages
-   embed storage keys.
-3. **Every error carries a `traceId`**, so a caller can quote one identifier
-   instead of describing a timestamp.
-4. **The status code is chosen at the boundary.** The domain does not know HTTP.
-5. **One envelope, everywhere** — including from servlet filters that run outside
-   the dispatcher.
-6. **Log once, at the boundary.** Logging at every level produces one incident as
-   five stack traces.
+1. **HTTP status first, then `code`.** Every error uses the standard wrapper
+   (`success: false`, `data: null`), and `status` always equals the HTTP status.
+   Clients branch on `code` only for specific handling, never on `message`.
+2. **The code decides the status.** Each `ErrorCode` carries its HTTP status, so
+   a `DomainException` names a code and nothing else; there is no second table
+   that can disagree.
+3. **Internal detail never reaches the client.** `getMessage()` is for logs;
+   `clientMessage()` (the code's default text) is what the caller sees.
+4. **Every error carries `meta.requestId`**, equal to the `X-Request-Id` header.
+5. **One wrapper, everywhere** — controllers, servlet filters
+   (`ErrorResponseWriter`), and the container `/error` path (`ApiErrorController`).
+6. **Log once, at the boundary.**
 
 ## 2. Taxonomy
 
 ```
-DomainException  (abstract, carries ErrorCode)
-├── MediaNotFoundException          404
-├── TenantAccessDeniedException     403
-├── InvalidMediaException           400
-├── ContentTypeMismatchException    422
-├── QuotaExceededException          507
-├── QuotaNotProvisionedException    400
-├── IllegalMediaStateException      409
-└── UploadSessionExpiredException   409
-
-InfrastructureException  (abstract)
-├── StorageUnavailableException     502
-├── DependencyUnavailableException  503
-└── LockAcquisitionException        503
+DomainException  (abstract, carries ErrorCode → HTTP status)
+├── InvalidMediaException              422 MEDIA_INVALID
+├── ContentTypeMismatchException       422 CONTENT_TYPE_MISMATCH
+├── ContentTypeNotAllowedException     415 CONTENT_TYPE_NOT_ALLOWED
+├── MediaTooLargeException             413 MEDIA_TOO_LARGE
+├── BatchTooLargeException             413 BATCH_TOO_MANY_FILES
+├── InvalidBatchException              422 BATCH_FILES_REQUIRED
+├── MediaNotFoundException             404 MEDIA_NOT_FOUND
+├── UploadSessionNotFoundException     404 UPLOAD_SESSION_NOT_FOUND
+├── TenantAccessDeniedException        403 FORBIDDEN
+├── IllegalMediaStateException         409 MEDIA_ILLEGAL_STATE
+├── UploadSessionExpiredException      409 UPLOAD_SESSION_EXPIRED
+├── RequestInProgressException         409 IDEMPOTENCY_KEY_IN_PROGRESS  (+ Retry-After: 2)
+├── IdempotencyConflictException       409 IDEMPOTENCY_KEY_REUSED
+├── IdempotencyKeyRequiredException    400 IDEMPOTENCY_KEY_REQUIRED
+├── QuotaNotProvisionedException       409 QUOTA_NOT_PROVISIONED
+├── InvalidQuotaLimitException         422 QUOTA_LIMIT_INVALID
+├── QuotaExceededException             507 QUOTA_EXCEEDED
+├── StorageOperationException          502 STORAGE_UNAVAILABLE
+├── UnsupportedStorageOperationException 501 OPERATION_UNSUPPORTED
+└── ServiceBusyException               503 SERVICE_UNAVAILABLE          (+ Retry-After: 5)
 ```
-
-`getMessage()` is for logs and may contain internal detail.
-`clientMessage()` is what reaches the caller and must contain none.
 
 ## 3. Mapping
 
-| Exception | Status | Code | Logged at |
-|---|---|---|---|
-| `InvalidMediaException` | 400 | `MEDIA_INVALID` | DEBUG |
-| `MethodArgumentNotValidException` | 400 | `REQUEST_INVALID` | DEBUG |
-| `QuotaNotProvisionedException` | 400 | `QUOTA_NOT_PROVISIONED` | INFO |
-| *(no credential)* | 401 | `UNAUTHENTICATED` | INFO |
-| `TenantAccessDeniedException` | 403 | `ACCESS_DENIED` | **WARN** |
-| `MediaNotFoundException` | 404 | `MEDIA_NOT_FOUND` | DEBUG |
-| `IllegalMediaStateException` | 409 | `MEDIA_ILLEGAL_STATE` | INFO |
-| *(idempotent request in flight)* | 409 | `REQUEST_IN_PROGRESS` | DEBUG |
-| `UploadSessionExpiredException` | 409 | `UPLOAD_SESSION_EXPIRED` | INFO |
-| `MaxUploadSizeExceededException` | 413 | `MEDIA_TOO_LARGE` | DEBUG |
-| *(type not allowed)* | 415 | `CONTENT_TYPE_NOT_ALLOWED` | INFO |
-| `ContentTypeMismatchException` | 422 | `CONTENT_TYPE_MISMATCH` | **WARN** |
-| *(idempotency key reused)* | 422 | `IDEMPOTENCY_KEY_REUSED` | WARN |
-| *(rate limited)* | 429 | `RATE_LIMITED` | INFO |
-| `QuotaExceededException` | **507** | `QUOTA_EXCEEDED` | INFO |
-| `StorageUnavailableException` | 502 | `STORAGE_UNAVAILABLE` | **ERROR** |
-| `DependencyUnavailableException` | 503 | `DEPENDENCY_UNAVAILABLE` | **ERROR** |
-| Anything else | 500 | `INTERNAL_ERROR` | **ERROR** + stack |
+| Situation | Status | `code` | `errors[]` | Logged at |
+|---|---|---|---|---|
+| Unparseable JSON, missing/invalid header, malformed id, missing tenant headers | 400 | `BAD_REQUEST` | – | WARN / ERROR (raw `IllegalArgumentException`) |
+| No `X-Idempotency-Key` on a create | 400 | `IDEMPOTENCY_KEY_REQUIRED` | – | INFO |
+| No or unknown API key | 401 | `UNAUTHENTICATED` | – | WARN + `storage.auth.rejected` |
+| Scope missing | 403 | `FORBIDDEN` | – | **WARN** |
+| Unknown route | 404 | `NOT_FOUND` | – | DEBUG |
+| Wrong method | 405 | `METHOD_NOT_ALLOWED` (+ `Allow`) | – | – |
+| Wrong request `Content-Type` | 415 | `UNSUPPORTED_MEDIA_TYPE` | – | – |
+| Bean validation (body, query, path), missing param/part, bad enum/type in query or body | 422 | `VALIDATION_FAILED` | `REQUIRED`, `INVALID_VALUE`, `OUT_OF_RANGE`, `TOO_LONG`, `INVALID_FORMAT` | DEBUG |
+| Rate limited (filter) | 429 | `RATE_LIMITED` (+ `Retry-After`) | – | INFO |
+| Container multipart ceiling | 413 | `MEDIA_TOO_LARGE` | – | DEBUG |
+| Domain exceptions | per §2 | per §2 | – | INFO; **WARN** for `FORBIDDEN`, `CONTENT_TYPE_MISMATCH`, `IDEMPOTENCY_KEY_REUSED`; **ERROR** for 5xx |
+| Anything else | 500 | `INTERNAL_ERROR` | – | **ERROR** + stack |
 
-**507 for quota is preserved deliberately** from the current service for downstream
-compatibility, despite 429 arguably being more conventional. Changing it would
-break a consumer for a cosmetic gain.
+**507 for quota is kept**: it is the literal HTTP meaning, consumers already
+handle it, and a 5xx that must *not* be retried is called out in §5.
 
-**403 and 422 are logged at WARN** because both indicate either an attack or a
-broken client, and both are worth alerting on above a rate threshold.
+## 4. Gaps closed
 
-## 4. Gaps in the current handler
-
-| Gap | Consequence |
+| Gap | Fixed by |
 |---|---|
-| No handler for `MethodArgumentNotValidException` | Bean-validation failures become 500s |
-| No handler for `NumberFormatException` from the context interceptor | A non-numeric `X-Org-Id` is a 500, not a 400 |
-| `handleStorage` returns `ex.getMessage()` | Storage keys and provider detail reach the client |
-| `MediaNotFoundException("File not found: " + storageKey)` | Leaks the key in a 404 body |
-| No `traceId` anywhere | A caller reporting a failure has nothing to quote |
-| Filters emit hand-built JSON | Rate-limit responses match the envelope by coincidence and will drift |
+| Two tracking ids (`X-Trace-Id`, `X-Request-Id`) | `RequestIdFilter`: `X-Request-Id` only (ADR-015) |
+| Filter errors lost `Retry-After` / rate-limit headers (`response.reset()`) | `ErrorResponseWriter` resets the body buffer only |
+| `InvalidQuotaLimitException` had no mapping → 500 | Status on `ErrorCode` (422) |
+| Every client mistake was `400 REQUEST_INVALID` | 400 unreadable vs 422 invalid fields, with field codes |
+| Container errors used Boot's default JSON | `ApiErrorController` |
 
 ## 5. Retry guidance
 
 | Status | Client should | Header |
 |---|---|---|
-| 400, 403, 404, 413, 415, 422 | **Not** retry — retrying is deterministic failure | — |
-| 409 `REQUEST_IN_PROGRESS` | Retry after the hint | `Retry-After` |
+| 400, 401, 403, 404, 413, 415, 422 | **Not** retry — retrying is deterministic failure | — |
+| 409 `IDEMPOTENCY_KEY_IN_PROGRESS` | Retry the same request after the hint | `Retry-After` |
+| 409 other | Not retry without changing state | — |
 | 429 | Back off | `Retry-After` |
 | 500, 502, 503 | Retry with exponential backoff and jitter | `Retry-After` when known |
 | 507 | Not retry until space is freed | — |
 
-Documented explicitly because a client retrying a 422 forever is a common and
-avoidable failure, and one this service will see from `template-service`.
-
 ## 6. Partial failure
 
-Batch endpoints return `207` with per-item results. One bad item never fails the
-batch — the current batch upload endpoint already does this well, and the pattern is
-kept.
+Batch endpoints return `200` with per-item results in `data`
+(`successCount`, `failedCount`, `results[]`). One bad item never fails the batch;
+clients read `failedCount`, not the HTTP status. Request-level problems (no key,
+no files, too many files) are ordinary error responses.
 
 ## 7. Degradation
 

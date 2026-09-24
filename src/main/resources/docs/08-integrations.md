@@ -4,12 +4,15 @@
 
 ### 1.1 Calling services → Storage Service
 
-Every caller presents an `X-Api-Key` identifying itself, plus `X-Org-Id` and
-`X-Project-Id` naming the tenant it is acting for (ADR-010).
+Every caller presents an `X-Internal-Api-Key` identifying itself (and names
+itself in `X-Internal-Caller`), plus `X-Org-Id` and `X-Project-Id` naming the
+tenant it is acting for (ADR-010, ADR-015). It passes on `X-Request-Id` and,
+when a user is acting, `X-User-Id` unchanged.
 
 | Item | Requirement |
 |---|---|
-| Header | `X-Api-Key: <key>` (header name configurable) |
+| Header | `X-Internal-Api-Key: <key>` — fixed by the API Standard; `X-Api-Key` is not accepted |
+| Caller | `X-Internal-Caller: <client id>` — logged and counted on mismatch, never trusted over the key |
 | Key length | ≥32 characters, from a secret store |
 | Tenant | `X-Org-Id`, `X-Project-Id` — read only after the key validates |
 | Scopes | Configured per client, not sent by the caller |
@@ -23,6 +26,13 @@ authenticates callers itself.
 
 Uploads media for message templates. Server-to-server.
 
+- **Contract used:** `POST /api/v1/media/upload/batch` with `X-Idempotency-Key`
+  (fresh per call); reads `data.successCount/failedCount/results[]` and the
+  per-file `error.code`. HTTP `200` on a processed batch (was `207`).
+  template-service reads only the standard wrapper, so both services are
+  deployed together.
+- **Key:** `TEMPLATE_SERVICE_API_KEY` here must equal template-service's
+  `INTERNAL_API_KEY`, which it sends in `X-Internal-Api-Key`.
 - **Retries.** This is precisely why idempotency keys are mandatory: today a retry
   after a timeout creates a second file, a second row, and a second quota charge,
   and — with no delete endpoint — that quota is unreclaimable.

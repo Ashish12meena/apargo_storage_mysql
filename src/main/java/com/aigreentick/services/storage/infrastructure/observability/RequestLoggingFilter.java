@@ -22,7 +22,7 @@ import java.util.Set;
  * duration.
  *
  * <p>This is the piece that makes a request TRACKABLE end to end. The MDC set by
- * {@link TraceContextFilter} already stamps {@code traceId} and {@code requestId}
+ * {@link RequestIdFilter} already stamps {@code requestId}
  * on every line the service emits; this filter is what guarantees there is at
  * least one line per request even when nothing else logs, and that the line
  * records how the request actually ended. Given a trace id from a caller's error
@@ -30,10 +30,10 @@ import java.util.Set;
  *
  * <h2>Position in the chain</h2>
  * Registered at order 2 in {@code SecurityConfig} — immediately after
- * {@link TraceContextFilter} and BEFORE authentication and rate limiting. That
+ * {@link RequestIdFilter} and BEFORE authentication and rate limiting. That
  * placement is the point:
  * <ul>
- *   <li>The MDC already holds {@code traceId} and {@code requestId}, so the
+ *   <li>The MDC already holds {@code requestId}, so the
  *       access line correlates with everything else.</li>
  *   <li>Requests REJECTED by authentication (401) or the rate limiter (429) are
  *       still logged. A filter placed after them would log only the traffic that
@@ -43,7 +43,7 @@ import java.util.Set;
  *       {@code projectId} are in the MDC by then even though they did not exist
  *       when the request arrived. ({@code TenantContextFilter} clears the
  *       ThreadLocal in its {@code finally}, but the MDC is cleared later still,
- *       by {@code TraceContextFilter}.)</li>
+ *       by {@code RequestIdFilter}.)</li>
  * </ul>
  *
  * <h2>What this filter deliberately does not do</h2>
@@ -131,7 +131,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         // real fields rather than leaving them buried in the message text, which
         // is what makes "every request over 2s yesterday" a query instead of a
         // regex. Removed immediately: the MDC outlives this filter by one frame
-        // (TraceContextFilter clears it), and these values are meaningless on
+        // (RequestIdFilter clears it), and these values are meaningless on
         // any other line.
         MDC.put(MDC_METHOD, method);
         MDC.put(MDC_PATH, path);

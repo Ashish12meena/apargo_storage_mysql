@@ -31,8 +31,10 @@ to labels.
 
 ### 1.2 Tracing
 
-No distributed tracing exists. `traceId` is locally generated and never propagated,
-so a request cannot be followed across the Eureka mesh.
+`X-Request-Id` (API Standard §1) is the one tracking id: received from the caller
+(template-service passes on its own), or generated, echoed on every response and
+in `meta.requestId`. `X-Trace-Id` is no longer used. Span-level tracing is the
+remaining gap:
 
 `micrometer-tracing-bridge-otel` with an OTLP exporter. W3C `traceparent`
 propagated to every downstream. Spans around: quota reservation, storage write,
@@ -41,8 +43,8 @@ Sampling: 100% of errors and slow requests, 1–10% baseline.
 
 ### 1.3 Logging
 
-JSON in production. MDC on every request: `traceId`, `requestId`, `orgId`,
-`projectId`, `userId`, `mediaId`. None of this exists today.
+JSON in production. MDC on every request: `requestId`, `orgId`, `projectId`,
+`caller` (authenticated client), `userId` (from `X-User-Id`), `mediaId`. None of this exists today.
 
 | Level | Use |
 |---|---|

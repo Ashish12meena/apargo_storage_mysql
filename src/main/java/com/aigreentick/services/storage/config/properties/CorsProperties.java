@@ -39,7 +39,7 @@ public record CorsProperties(
         @DefaultValue("*") List<String> allowedOrigins,
         @DefaultValue({"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}) List<String> allowedMethods,
         @DefaultValue("*") List<String> allowedHeaders,
-        @DefaultValue({"X-Trace-Id", "X-Request-Id", "X-RateLimit-Limit",
+        @DefaultValue({"X-Request-Id", "Location", "X-RateLimit-Limit",
                 "X-RateLimit-Remaining", "Retry-After"}) List<String> exposedHeaders,
         @DefaultValue("true") boolean allowCredentials,
         @DefaultValue("3600") long maxAgeSeconds) {

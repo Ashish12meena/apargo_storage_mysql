@@ -9,7 +9,9 @@ import java.util.List;
 /**
  * {@code security.*}
  *
- * <p>Authentication is a shared API key per calling service (ADR-010, revised).
+ * <p>Authentication is a shared API key per calling service (ADR-010, revised),
+ * always presented in {@code X-Internal-Api-Key} — the API Standard name, fixed
+ * in {@code HeaderNames}, not configurable (ADR-015).
  * The key identifies WHO is calling; the tenant headers say WHICH tenant the call
  * is for.
  *
@@ -30,7 +32,6 @@ import java.util.List;
 @ConfigurationProperties(prefix = "security")
 public record SecurityProperties(
         @DefaultValue("true") boolean apiKeyEnabled,
-        @DefaultValue("X-Api-Key") String apiKeyHeader,
         List<Client> clients) {
 
     public SecurityProperties {

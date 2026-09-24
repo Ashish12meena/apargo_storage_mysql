@@ -34,9 +34,14 @@ public class MediaDtoMapper {
                 view.createdBy());
     }
 
-    public PageResponse<MediaResponse> toPageResponse(PageView<MediaView> page) {
+    /**
+     * Cursor page (API Standard §5): {@code {items, pagination: {size, nextCursor, hasNext}}}.
+     *
+     * @param size the page size actually used (after the query clamps it)
+     */
+    public PageResponse<MediaResponse> toPageResponse(PageView<MediaView> page, int size) {
         return new PageResponse<>(page.items().stream().map(this::toResponse).toList(),
-                page.nextCursor(), page.hasMore());
+                new PageResponse.CursorPagination(size, page.hasMore() ? page.nextCursor() : null, page.hasMore()));
     }
 
     /**

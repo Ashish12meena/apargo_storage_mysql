@@ -8,6 +8,6 @@ import com.aigreentick.services.storage.common.error.ErrorCode;
 public class TenantAccessDeniedException extends DomainException {
 
     public TenantAccessDeniedException(String internalMessage) {
-        super(ErrorCode.ACCESS_DENIED, internalMessage);
+        super(ErrorCode.FORBIDDEN, internalMessage);
     }
 }

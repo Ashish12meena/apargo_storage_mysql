@@ -14,7 +14,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -96,8 +95,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
             response.setHeader(HeaderNames.RETRY_AFTER, String.valueOf(retryAfterSeconds));
             response.setHeader(HeaderNames.RATELIMIT_RESET, String.valueOf(retryAfterSeconds));
             meters.counter("storage.ratelimit.rejected", "rule", ruleName).increment();
-            errorWriter.write(response, HttpStatus.TOO_MANY_REQUESTS.value(),
-                    ErrorCode.RATE_LIMITED, RequestContext.traceIdOrNull());
+            errorWriter.write(request, response, ErrorCode.RATE_LIMITED);
             return;
         }
         chain.doFilter(request, response);

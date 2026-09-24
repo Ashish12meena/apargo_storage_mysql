@@ -8,6 +8,6 @@ import com.aigreentick.services.storage.common.error.ErrorCode;
 public class RequestInProgressException extends DomainException {
 
     public RequestInProgressException(String internalMessage) {
-        super(ErrorCode.REQUEST_IN_PROGRESS, internalMessage);
+        super(ErrorCode.IDEMPOTENCY_KEY_IN_PROGRESS, internalMessage);
     }
 }

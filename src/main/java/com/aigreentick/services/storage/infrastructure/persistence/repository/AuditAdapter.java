@@ -37,7 +37,9 @@ public class AuditAdapter implements AuditPort {
         entity.setResourceId(resourceId);
         entity.setDetail(detailJson);
         entity.setClientIp(actor == null ? null : actor.requestIp());
-        entity.setTraceId(RequestContext.traceIdOrNull());
+        // Column keeps its historical name; it holds the X-Request-Id (the only
+        // tracking id since the API Standard was adopted).
+        entity.setTraceId(RequestContext.requestIdOrNull());
         entity.setOccurredAt(Instant.now());
         jpa.save(entity);
     }

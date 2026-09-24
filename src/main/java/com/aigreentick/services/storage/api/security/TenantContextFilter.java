@@ -3,16 +3,13 @@ package com.aigreentick.services.storage.api.security;
 import com.aigreentick.services.storage.api.error.ErrorResponseWriter;
 import com.aigreentick.services.storage.common.constants.ApiPaths;
 import com.aigreentick.services.storage.common.constants.HeaderNames;
-import com.aigreentick.services.storage.common.context.RequestContext;
 import com.aigreentick.services.storage.common.error.ErrorCode;
-import com.aigreentick.services.storage.config.properties.SecurityProperties;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import com.aigreentick.services.storage.infrastructure.observability.TraceContextFilter;
-import org.springframework.http.HttpStatus;
+import com.aigreentick.services.storage.infrastructure.observability.RequestIdFilter;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -49,14 +46,12 @@ import lombok.extern.slf4j.Slf4j;
 public class TenantContextFilter extends OncePerRequestFilter {
 
     private final ApiKeyAuthenticator authenticator;
-    private final SecurityProperties properties;
     private final ErrorResponseWriter errorWriter;
     private final MeterRegistry meters;
 
-    public TenantContextFilter(ApiKeyAuthenticator authenticator, SecurityProperties properties,
+    public TenantContextFilter(ApiKeyAuthenticator authenticator,
                                ErrorResponseWriter errorWriter, MeterRegistry meters) {
         this.authenticator = authenticator;
-        this.properties = properties;
         this.errorWriter = errorWriter;
         this.meters = meters;
     }
@@ -74,18 +69,26 @@ public class TenantContextFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         try {
-            Optional<TenantPrincipal> principal = resolve(request);
-            if (principal.isEmpty()) {
-                errorWriter.write(response, HttpStatus.UNAUTHORIZED.value(),
-                        ErrorCode.UNAUTHENTICATED, RequestContext.traceIdOrNull());
+            Resolution resolution = resolve(request);
+            if (resolution.principal() == null) {
+                // 401 when the caller is not authenticated; 400 when it is but the
+                // tenant headers are missing or unusable (API Standard §6: a
+                // header that can't be read is BAD_REQUEST, not an auth failure).
+                if (resolution.failure() == ErrorCode.BAD_REQUEST) {
+                    errorWriter.write(request, response, ErrorCode.BAD_REQUEST,
+                            "Missing or invalid header '" + HeaderNames.ORG_ID + "' or '"
+                                    + HeaderNames.PROJECT_ID + "'");
+                } else {
+                    errorWriter.write(request, response, resolution.failure());
+                }
                 return;
             }
-            TenantContext.set(principal.get());
+            TenantContext.set(resolution.principal());
             // Tenant identity reaches the MDC only here, because it does not
             // exist until authentication resolves. Without this call no log line
             // in the service carries an org or project, which makes a
             // cross-tenant incident unattributable after the fact.
-            TraceContextFilter.enrichMdc();
+            RequestIdFilter.enrichMdc();
             chain.doFilter(request, response);
         } finally {
             // finally, not afterCompletion: context must not survive an exception
@@ -94,25 +97,34 @@ public class TenantContextFilter extends OncePerRequestFilter {
         }
     }
 
-    private Optional<TenantPrincipal> resolve(HttpServletRequest request) {
+    /** Either a principal, or the error code explaining why there is none. */
+    private record Resolution(TenantPrincipal principal, ErrorCode failure) {
+
+        static Resolution of(Optional<TenantPrincipal> principal, ErrorCode failure) {
+            return principal.map(p -> new Resolution(p, null)).orElseGet(() -> new Resolution(null, failure));
+        }
+    }
+
+    private Resolution resolve(HttpServletRequest request) {
         Long orgId = parseLong(request.getHeader(HeaderNames.ORG_ID));
         Long projectId = parseLong(request.getHeader(HeaderNames.PROJECT_ID));
 
         if (!authenticator.enabled()) {
             // Development only. StartupAssertions fails the boot if this is false
             // under the prod profile.
-            return authenticator.anonymousDevPrincipal(orgId, projectId);
+            return Resolution.of(authenticator.anonymousDevPrincipal(orgId, projectId), ErrorCode.BAD_REQUEST);
         }
 
-        String presented = request.getHeader(properties.apiKeyHeader());
+        String presented = request.getHeader(HeaderNames.INTERNAL_API_KEY);
         Optional<ApiKeyAuthenticator.ResolvedClient> client = authenticator.authenticate(presented);
         if (client.isEmpty()) {
             meters.counter("storage.auth.rejected",
                     "reason", presented == null ? "missing_api_key" : "unknown_api_key").increment();
             log.warn("rejected request to {} from {}: {}", request.getRequestURI(),
                     request.getRemoteAddr(), presented == null ? "no API key" : "unrecognised API key");
-            return Optional.empty();
+            return new Resolution(null, ErrorCode.UNAUTHENTICATED);
         }
+        authenticator.checkDeclaredCaller(client.get(), request.getHeader(HeaderNames.INTERNAL_CALLER));
 
         Optional<TenantPrincipal> principal =
                 authenticator.toPrincipal(client.get(), orgId, projectId);
@@ -120,12 +132,12 @@ public class TenantContextFilter extends OncePerRequestFilter {
             meters.counter("storage.auth.rejected", "reason", "missing_or_invalid_tenant").increment();
             log.warn("client {} supplied no usable tenant headers", client.get().definition().id());
         }
-        return principal;
+        return Resolution.of(principal, ErrorCode.BAD_REQUEST);
     }
 
     /**
      * Never throws. The predecessor called {@code Long.valueOf} unguarded inside an
-     * interceptor, so a non-numeric header produced a 500 instead of a 401.
+     * interceptor, so a non-numeric header produced a 500. It is now a 400.
      */
     private Long parseLong(String raw) {
         if (raw == null || raw.isBlank()) {

@@ -19,7 +19,7 @@
 ### Shared API key per calling service
 
 ```
-caller ──X-Api-Key──▶ storage-service
+caller ──X-Internal-Api-Key──▶ storage-service
                           │
               constant-time key lookup
                           │

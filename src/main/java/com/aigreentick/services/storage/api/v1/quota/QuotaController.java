@@ -9,7 +9,7 @@ import com.aigreentick.services.storage.api.security.TenantContext;
 import com.aigreentick.services.storage.api.security.TenantPrincipal;
 import com.aigreentick.services.storage.application.port.in.ManageQuotaUseCase;
 import com.aigreentick.services.storage.common.constants.ApiPaths;
-import com.aigreentick.services.storage.common.context.RequestContext;
+import com.aigreentick.services.storage.api.common.Responses;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
@@ -44,8 +44,6 @@ public class QuotaController {
     public ResponseEntity<ApiResponse<QuotaResponse>> getOwnQuota() {
         TenantPrincipal principal = TenantContext.require();
         guard.requireScope(principal, Scope.QUOTA_READ);
-        return ResponseEntity.ok(ApiResponse.success(null,
-                mapper.toResponse(quotaUseCase.getForTenant(principal.tenant())),
-                RequestContext.traceIdOrNull()));
+        return Responses.ok("Quota fetched", mapper.toResponse(quotaUseCase.getForTenant(principal.tenant())));
     }
 }
