@@ -98,7 +98,7 @@ Not compiled in the authoring environment (no Maven Central); run
 | **`GET /api/v1/media/{id}`**, keyset listing, download-url | `api/rest/MediaController.java` |
 | Outbox table, dispatcher, media reaper, purge scan | `infrastructure/outbox`, `infrastructure/scheduler` |
 | Session sweeper, quota reconciliation, orphan scan | `application/service/StorageReconciliationService.java` |
-| Append-only audit trail | `infrastructure/.../AuditAdapter.java` |
+| Audit events to Kafka (platform standard) | `application/audit/StorageAuditEvents.java`, `infrastructure/audit/AuditEventPublisher.java` |
 | Tenant quota self-service endpoint | `api/rest/QuotaController.java` |
 | **Tenant teardown** — project and org, async, batched | `api/internal/InternalMediaController.java` |
 | `purge_after` — makes `?permanent=true` actually immediate | `V8`, `MediaDeletionService` |
@@ -121,7 +121,7 @@ Not compiled in the authoring environment (no Maven Central); run
 
 | Item | Location |
 |---|---|
-| Package skeleton with boundary `package-info.java` | `com.aigreentick.services.storage.*` |
+| Package skeleton with boundary `package-info.java` | `com.apargo.services.storage.*` |
 | Domain value objects and enums | `domain/media`, `domain/quota`, `domain/upload`, `domain/shared` |
 | Domain aggregate signatures (no bodies) | `Media`, `Quota`, `UploadSession` |
 | Domain events | `domain/event/DomainEvent` |

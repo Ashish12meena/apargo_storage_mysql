@@ -88,6 +88,23 @@ spring:
     virtual:
       enabled: false
 
+  # ── Kafka (audit events only) ─────────────────────────────────────────────
+  # Producer settings fixed by the Audit Events Producer Guide: acks=all and
+  # idempotence on. Only AuditEventPublisher sends; nothing in this service
+  # consumes. max.block.ms bounds how long a send may wait for broker metadata —
+  # that wait happens on the audit publisher pool, never on a request thread.
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      client-id: ${KAFKA_CLIENT_ID:${spring.application.name}}
+      acks: all                              # fixed by the Producer Guide
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true             # fixed by the Producer Guide
+        delivery.timeout.ms: ${KAFKA_DELIVERY_TIMEOUT_MS:120000}
+        max.block.ms: ${KAFKA_MAX_BLOCK_MS:10000}
+
 server:
   port: ${SERVER_PORT:8030}
   shutdown: graceful                # in-flight uploads drain on deploy
@@ -241,6 +258,23 @@ security:
       scopes: [quota:admin, quota:read, tenant:teardown]
 
 
+# ─── Audit events ──────────────────────────────────────────────────────────
+# Business changes are published to Kafka after commit (docs/01-architecture.md
+# §9). Bound to AuditProperties; its Java defaults equal these defaults.
+# AUDIT_ENABLED=false switches publishing off (events are logged at DEBUG); the
+# APIs behave exactly the same either way.
+audit:
+  enabled: ${AUDIT_ENABLED:true}
+  source-service: ${AUDIT_SOURCE_SERVICE:${spring.application.name}}
+  environment: ${AUDIT_ENVIRONMENT:development}
+  topics:
+    audit: ${AUDIT_TOPIC:apargo.audit.event}
+  publisher:
+    pool-size: ${AUDIT_PUBLISHER_POOL_SIZE:2}
+    queue-capacity: ${AUDIT_PUBLISHER_QUEUE_CAPACITY:10000}
+    await-termination-seconds: ${AUDIT_PUBLISHER_AWAIT_TERMINATION_SECONDS:15}
+    thread-name-prefix: ${AUDIT_PUBLISHER_THREAD_NAME_PREFIX:audit-publisher-}
+
 # ─── Company API Standard ──────────────────────────────────────────────────
 api:
   # 400 IDEMPOTENCY_KEY_REQUIRED when an upload/create arrives without
@@ -328,6 +362,7 @@ springdoc:
 #   LOG_REQUEST_START=true             a line on arrival, not just completion
 #   LOG_REQUEST_HEADERS=true           allowlisted request headers
 #   LOG_SQL=DEBUG                      Hibernate's generated statements
+#   LOG_LEVEL_AUDIT=DEBUG              audit publisher: every event and delivery
 #
 # ── Never logged, at any level ─────────────────────────────────────────────
 # API keys, Authorization values, presigned URLs (the query string carries the
@@ -342,17 +377,18 @@ logging:
     # The service itself. One knob for everything, then narrower knobs for the
     # layer you are actually debugging — so you can open up the storage adapter
     # without also getting every rate-limit decision.
-    com.aigreentick.services.storage: ${LOG_LEVEL:INFO}
-    com.aigreentick.services.storage.api: ${LOG_LEVEL_API:INFO}
-    com.aigreentick.services.storage.application: ${LOG_LEVEL_APPLICATION:INFO}
-    com.aigreentick.services.storage.infrastructure.storage: ${LOG_LEVEL_STORAGE:DEBUG}
-    com.aigreentick.services.storage.infrastructure.outbox: ${LOG_LEVEL_OUTBOX:INFO}
-    com.aigreentick.services.storage.infrastructure.ratelimit: ${LOG_LEVEL_RATELIMIT:INFO}
-    com.aigreentick.services.storage.infrastructure.scheduler: ${LOG_LEVEL_SCHEDULER:INFO}
+    com.apargo.services.storage: ${LOG_LEVEL:INFO}
+    com.apargo.services.storage.api: ${LOG_LEVEL_API:INFO}
+    com.apargo.services.storage.application: ${LOG_LEVEL_APPLICATION:INFO}
+    com.apargo.services.storage.infrastructure.storage: ${LOG_LEVEL_STORAGE:DEBUG}
+    com.apargo.services.storage.infrastructure.outbox: ${LOG_LEVEL_OUTBOX:INFO}
+    com.apargo.services.storage.infrastructure.ratelimit: ${LOG_LEVEL_RATELIMIT:INFO}
+    com.apargo.services.storage.infrastructure.scheduler: ${LOG_LEVEL_SCHEDULER:INFO}
+    com.apargo.services.storage.infrastructure.audit: ${LOG_LEVEL_AUDIT:INFO}
 
     # The access log is its own logger, so request lines can be turned down
     # independently of everything else the service says.
-    com.aigreentick.services.storage.infrastructure.observability.RequestLoggingFilter: ${LOG_LEVEL_ACCESS:INFO}
+    com.apargo.services.storage.infrastructure.observability.RequestLoggingFilter: ${LOG_LEVEL_ACCESS:INFO}
 
     # ── Third-party noise ──────────────────────────────────────────────────
     # WARN, not INFO. The AWS SDK in particular logs per-request detail at
@@ -362,6 +398,7 @@ logging:
     org.hibernate.stat: WARN
     software.amazon.awssdk: WARN
     io.lettuce.core: WARN
+    org.apache.kafka: WARN                     # producer config dump and reconnect chatter
     org.apache.tika: WARN
     org.springframework.web: INFO
     org.springframework.jdbc.datasource.init: INFO
@@ -373,8 +410,8 @@ logging:
   # wonder why every parameter prints as '?'.
   group:
     sql: org.hibernate.SQL,org.hibernate.orm.jdbc.bind
-    storage-io: com.aigreentick.services.storage.infrastructure.storage,software.amazon.awssdk
-    request-flow: com.aigreentick.services.storage.api.security,com.aigreentick.services.storage.infrastructure.observability,com.aigreentick.services.storage.infrastructure.ratelimit
+    storage-io: com.apargo.services.storage.infrastructure.storage,software.amazon.awssdk
+    request-flow: com.apargo.services.storage.api.security,com.apargo.services.storage.infrastructure.observability,com.apargo.services.storage.infrastructure.ratelimit
 
   # ── Correlation ───────────────────────────────────────────────────────────
   # Injected into Spring Boot's default console and file patterns, so EVERY
@@ -384,9 +421,11 @@ logging:
   # The `:-` defaults matter: a scheduled job has no request, and without them
   # every background line would read `%X{requestId}` literally.
   pattern:
-    # requestId is X-Request-Id (the only tracking id); caller is the
-    # authenticated client; userId is X-User-Id when a user is acting.
-    correlation: "[req=%X{requestId:-} org=%X{orgId:-} proj=%X{projectId:-} caller=%X{caller:-} user=%X{userId:-}] "
+    # requestId is X-Request-Id (client-facing); trace is the backend trace id
+    # (meta.traceId, audit events, outbound traceparent); caller is the
+    # authenticated client; userId is X-User-Id when a user is acting; job is
+    # the scheduled job running on the thread.
+    correlation: "[trace=%X{traceId:-} req=%X{requestId:-} org=%X{orgId:-} proj=%X{projectId:-} caller=%X{caller:-} user=%X{userId:-} job=%X{jobName:-}] "
     # Milliseconds, not the default seconds: request durations here are often
     # single-digit milliseconds and a second-resolution timestamp cannot order
     # them.

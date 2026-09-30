@@ -85,6 +85,8 @@ Every one of these is **required in production**. Absent → startup fails.
 | `TEMPLATE_SERVICE_API_KEY`, `CHAT_SERVICE_API_KEY`, `ORG_SERVICE_API_KEY` | ≥32 chars, from a secret store |
 | `TRUSTED_PROXY_CIDRS` | Narrow to the load balancer subnet |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | |
+| `KAFKA_BOOTSTRAP_SERVERS` | Audit events. No default under `prod` |
+| `AUDIT_ENVIRONMENT` | `production` (default under `prod`); `staging` on staging |
 
 **Deliberately absent:** `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Removed
 from the configuration schema entirely, so they cannot be set even deliberately.
@@ -220,6 +222,51 @@ scheduling:
 
 The default Spring scheduler is single-threaded, which would let a slow nightly
 job block the 1-second outbox poll. See 11-production-readiness.md § Scheduling.
+
+### `spring.kafka.*` and `audit.*` — audit events
+
+Requires `org.springframework.kafka:spring-kafka` in the POM (version managed by
+the Spring Boot parent):
+
+```xml
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+```
+
+Audit events go to Kafka after commit (01-architecture.md §8). The producer
+settings `acks=all` and `enable.idempotence=true` are fixed by the platform
+Producer Guide; do not change them. `AuditProperties` binds `audit.*`, and its
+Java defaults equal the YAML defaults.
+
+```yaml
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}   # no default under prod
+    producer:
+      client-id: ${KAFKA_CLIENT_ID:${spring.application.name}}
+      acks: all
+      properties:
+        enable.idempotence: true
+        delivery.timeout.ms: ${KAFKA_DELIVERY_TIMEOUT_MS:120000}
+        max.block.ms: ${KAFKA_MAX_BLOCK_MS:10000}
+
+audit:
+  enabled: ${AUDIT_ENABLED:true}                 # fixed to true under prod
+  source-service: ${AUDIT_SOURCE_SERVICE:${spring.application.name}}
+  environment: ${AUDIT_ENVIRONMENT:development}  # development | staging | production
+  topics:
+    audit: ${AUDIT_TOPIC:apargo.audit.event}
+  publisher:
+    pool-size: ${AUDIT_PUBLISHER_POOL_SIZE:2}
+    queue-capacity: ${AUDIT_PUBLISHER_QUEUE_CAPACITY:10000}   # full → event logged at ERROR and dropped
+    await-termination-seconds: ${AUDIT_PUBLISHER_AWAIT_TERMINATION_SECONDS:15}
+    thread-name-prefix: ${AUDIT_PUBLISHER_THREAD_NAME_PREFIX:audit-publisher-}
+```
+
+Local run without Kafka: `AUDIT_ENABLED=false`. An `AUDIT_TOPIC` in `.env`
+overrides the topic — check it first when events land on the wrong topic.
 
 ### `api.*` (company API Standard, ADR-015)
 

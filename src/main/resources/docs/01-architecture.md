@@ -172,3 +172,111 @@ The service being redesigned is Spring Boot 3.5 / Java 21, ~108 source files.
 
 Roughly **35% kept, 40% modified, 20% replaced, 5% deleted**. Per-component detail
 in [02-package-structure.md §5](02-package-structure.md).
+
+## 8. Audit events
+
+Every business change, and every business failure after a request was accepted,
+is published as an audit event to Kafka (topic `apargo.audit.event`) following the
+platform *Audit Events — Implementation Guide*. The platform contract lives in
+`com.apargo.platform.contract` and is copied unchanged from `template-service`.
+
+### 8.1 Guarantees
+
+- **Auditing never affects business logic.** Building an event cannot throw into
+  the caller (`StorageAuditEvents` catches and logs); publishing cannot throw
+  into the caller (`AuditEventPublisher` catches and logs). A Kafka outage, a
+  full audit queue or an invalid event is logged at ERROR with the full event
+  JSON for replay, and the API still returns exactly what it would have.
+- **Only committed changes.** Events are published `AFTER_COMMIT`; a rolled-back
+  change is never audited. Events raised outside a transaction are published at
+  once (each such write has already committed).
+- **No request waits for Kafka.** The send runs on `auditPublisherExecutor`
+  (bounded queue, no caller-runs: a full queue drops and logs).
+- **Best effort, at-least-once from the producer's side.** `acks=all`,
+  idempotent producer, retried until `delivery.timeout.ms`. The audit service
+  de-duplicates on `eventId` (UUIDv7, the Kafka key).
+- `AUDIT_ENABLED=false` turns publishing off; APIs behave identically.
+
+### 8.2 One owner per concern
+
+| Concern | Owner |
+|---|---|
+| Trace id for requests (new for public calls, continued from `traceparent` on `/internal/**` only, never returned as a header) | `TraceContextFilter` |
+| `requestId`, `userId`, `internalCaller`, org / project / caller in the MDC | `RequestIdFilter` |
+| Trace id and job name for scheduled runs | `ScheduledJobContext.run(ScheduledJobs.X, …)` |
+| MDC on pool threads | `MdcTaskDecorator` (scheduler and audit pool) |
+| Actor, channel, request / trace id of an event | `AuditContextProvider` |
+| Building events | `StorageAuditEvents` (the only factory) |
+| Event types / names, keys, codes, messages | `StorageAuditEventType`, `AuditConstants` |
+| Error → audit category | `AuditErrorMapper` |
+| Kafka | `AuditEventPublisher` (the only class using Kafka) |
+| Tunables | `audit.*` → `AuditProperties` |
+
+`meta.traceId` in every response is the key that finds a request's log lines
+(`trace=` in the log pattern) and its audit events.
+
+### 8.3 Actor and channel
+
+| Situation | `actor` | `channel` |
+|---|---|---|
+| Request with `X-User-Id` | `USER` / user id | `WEB` |
+| `/internal/**` call without a user | `SERVICE` / authenticated client id | `API` |
+| Work handed to a pool thread by a request | the request's actor | `WORKER` |
+| Scheduled job (including outbox handlers) | `SYSTEM` / job name | `WORKER` |
+| Anything else (e.g. `/api/**` without `X-User-Id`) | `SERVICE` / `unknown` | `API` |
+
+Callers of `/api/**` must forward `X-User-Id` for the acting user to appear.
+`ip` and `userAgent` stay empty until the gateway supplies trusted values.
+
+### 8.4 Event catalogue
+
+Module `STORAGE`. `changes` is `[]` for creates and deletes. Metadata holds ids,
+enum names, counts and flags only. Never in an event: original filenames, storage
+keys, presigned URLs, request bodies, stack traces, credentials.
+
+| Event type | Trigger | Actor / channel | Entity | Changes | Metadata |
+|---|---|---|---|---|---|
+| `MEDIA_UPLOADED` | `POST /media/upload`; each file of `POST /media/upload/batch`; `POST /media/uploads/{id}/complete` | request | `MEDIA` | `[]` | `mediaType`, `contentType`, `sizeBytes`, `uploadMode`, `uploadSessionId` |
+| `MEDIA_UPLOADED` (FAILURE) | Completing an accepted presigned session failed after the bytes landed; session aborted | request | `MEDIA` | `[]` | `mediaType`, `declaredSizeBytes`, `uploadMode`, `uploadSessionId`, `quotaReleased`; `error` |
+| `UPLOAD_SESSION_CREATED` | `POST /media/uploads` | request | `UPLOAD_SESSION` | `[]` | `mediaId`, `mediaType`, `uploadMode`, `declaredSizeBytes` |
+| `UPLOAD_SESSION_ABORTED` | `DELETE /media/uploads/{id}` that actually aborted a session | request | `UPLOAD_SESSION` | `status` | `mediaId`, `uploadMode`, `reclaimedBytes` |
+| `UPLOAD_SESSION_EXPIRED` | Session sweeper | `SYSTEM/sweep-sessions` | `UPLOAD_SESSION` | `status` | `mediaId`, `uploadMode`, `reclaimedBytes` |
+| `MEDIA_DELETED` | `DELETE /media/{id}`; each id of `DELETE /media/batch` | request | `MEDIA` | `[]` | `mediaType`, `sizeBytes`, `permanent` |
+| `MEDIA_RESTORED` | `POST /media/{id}/restore` | request | `MEDIA` | `status` | `sizeBytes` |
+| `MEDIA_PURGED` | Purge scan; outbox reaper | `SYSTEM/purge-media`, `SYSTEM/outbox-dispatch` | `MEDIA` | `[]` | `previousStatus`, `sizeBytes` |
+| `MEDIA_SCANNED` | Scan handler (only with scanning enabled) | `SYSTEM/outbox-dispatch` | `MEDIA` | `scanStatus`, `status` when quarantined | `sizeBytes` |
+| `QUOTA_CREATED` | `PUT /internal/quota/org` or `/project`, no limit before | internal caller | `ORG_QUOTA` / `PROJECT_QUOTA` | `[]` | `scope`, `maxBytes` |
+| `QUOTA_UPDATED` | Same, limit changed (unchanged → no event) | internal caller | `ORG_QUOTA` / `PROJECT_QUOTA` | `maxBytes` | `scope` |
+| `QUOTA_RECONCILED` | Nightly reconciliation found drift | `SYSTEM/reconcile-quota` | `PROJECT_QUOTA` | `usedBytes` | `driftBytes` |
+| `STORAGE_TEARDOWN_REQUESTED` | `DELETE /internal/media/org/{org}` or `/project/{org}/{project}` | internal caller | `STORAGE_TEARDOWN` (job id) | `[]` | `scope`, `permanent`, `estimatedFiles` |
+| `STORAGE_TEARDOWN_COMPLETED` | Teardown handler: no live files remain | `SYSTEM/outbox-dispatch` | `STORAGE_TEARDOWN` | `[]` | `scope`, `filesRemoved`, `batches` |
+| `STORAGE_TEARDOWN_COMPLETED` (FAILURE) | Teardown dead-lettered | `SYSTEM/outbox-dispatch` | `STORAGE_TEARDOWN` | `[]` | `scope`, `filesRemoved`, `batches`, `attempts`; `error` |
+| `STORAGE_ORPHANS_RECLAIMED` | Orphan scan removed objects for a tenant (0 → no event) | `SYSTEM/reclaim-orphans` | — | `[]` | `reclaimedCount`, `storageProvider` |
+
+**Not audited:** reads (list, get, download-url, `/serve` streaming), 400 / 422
+validation errors, 404 / 409 / 507 pre-checks that changed nothing, idempotent
+replays and repeat deletes / commits, technical failures of a request that left
+nothing changed (logs, by `traceId`), quota threshold alerts, and cleanup of
+dispatched outbox rows and expired idempotency records.
+
+**Error categories** (`AuditErrorMapper`): validation codes → `VALIDATION`;
+`UNAUTHENTICATED` → `AUTHENTICATION`; `FORBIDDEN` → `AUTHORIZATION`;
+`STORAGE_UNAVAILABLE`, `DEPENDENCY_FAILURE` → `EXTERNAL_SERVICE`; internal
+errors → `SYSTEM`; not found, conflict, invalid state, quota → `BUSINESS`. The
+message is kept only for `BUSINESS` / `VALIDATION` (client-safe text);
+`reference` is the trace id.
+
+### 8.5 Verifying
+
+1. Write with `X-User-Id`, note `meta.traceId` in the response.
+2. `kafka-console-consumer.sh --bootstrap-server <host>:9092 --topic apargo.audit.event --from-beginning --property print.key=true --property print.headers=true`
+3. Expect one event: key = `eventId`, `traceId` = `meta.traceId`, actor `USER`.
+4. Without Kafka locally: `AUDIT_ENABLED=false` (`LOG_LEVEL_AUDIT=DEBUG` prints each event).
+
+| Log | Cause |
+|---|---|
+| `Bootstrap broker … disconnected` | Kafka unreachable: check `KAFKA_BOOTSTRAP_SERVERS`, firewall |
+| `Topic … not present in metadata` | Broker unreachable, or topic missing with auto-create off |
+| `Audit event not published: invalid` | Bug in `StorageAuditEvents`; the log lists each problem |
+| `Audit event not published: publisher queue full` | Sustained Kafka slowness; raise `AUDIT_PUBLISHER_QUEUE_CAPACITY` or fix the broker |
+| Actor `SERVICE/unknown` | The request had no `X-User-Id` |

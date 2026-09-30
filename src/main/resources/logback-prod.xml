@@ -22,7 +22,7 @@
         <appender-ref ref="JSON"/>
     </root>
 
-    <logger name="com.aigreentick.services.storage" level="INFO"/>
+    <logger name="com.apargo.services.storage" level="INFO"/>
     <logger name="org.hibernate.SQL" level="WARN"/>
     <logger name="software.amazon.awssdk" level="WARN"/>
 </configuration>

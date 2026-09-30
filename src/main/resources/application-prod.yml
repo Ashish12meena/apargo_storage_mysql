@@ -17,6 +17,15 @@ spring:
     baseline-on-migrate: true
     validate-on-migrate: true
 
+  # No default in production: a missing broker address must fail loudly at
+  # deploy time, not silently publish nowhere.
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+
+audit:
+  enabled: true                  # fixed in production; not overridable by AUDIT_ENABLED
+  environment: ${AUDIT_ENVIRONMENT:production}   # set to 'staging' on staging
+
 storage:
   active-provider: s3          # StartupAssertions rejects 'local' under this profile
 
@@ -57,7 +66,7 @@ logging:
 
   level:
     root: INFO
-    com.aigreentick.services.storage: ${LOG_LEVEL:INFO}
+    com.apargo.services.storage: ${LOG_LEVEL:INFO}
 
   # The MDC (requestId, orgId, projectId, caller, userId) becomes real JSON
   # fields under this format rather than text inside a message, so an incident

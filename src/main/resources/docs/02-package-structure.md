@@ -3,7 +3,15 @@
 ## 1. Layout
 
 ```
-com.aigreentick.services.storage
+com.apargo.platform.contract  ← platform event contract, copied UNCHANGED from
+│                               template-service; never edited per service
+│   ├── audit/                AuditEventDto (+ builder), actor/entity/change/error DTOs,
+│   │                         status/channel/category enums, AuditEventValidator
+│   ├── access/               AccessEventDto (auth / gateway only)
+│   ├── event/                EventTopics, EventIds (UUIDv7), EventSchemaVersion, …
+│   └── identity/             ActorType
+
+com.apargo.services.storage
 ├── domain/                   ← no dependencies. Business model.
 │   ├── media/                Media, StorageKey, MediaStatus, ContentType, Checksum
 │   ├── quota/                Quota, QuotaReservation, QuotaScope
@@ -13,11 +21,16 @@ com.aigreentick.services.storage
 │   └── exception/            DomainException + subtypes
 │
 ├── common/                   ← no dependencies. Cross-cutting, framework-free.
-│   ├── constants/            ApiPaths, HeaderNames
-│   ├── context/              RequestContext (trace/request id — NOT tenant)
+│   ├── audit/                AuditContextProvider — actor, channel, request/trace id
+│   ├── constants/            ApiPaths, HeaderNames, MdcKeys, ScheduledJobs
+│   ├── context/              RequestContext (request id — NOT tenant), TraceContext,
+│   │                         ScheduledJobContext, MdcTaskDecorator
 │   └── error/                ErrorCode
 │
 ├── application/              ← depends on domain + common
+│   ├── audit/                StorageAuditEvents (the one event factory),
+│   │                         StorageAuditEventType, AuditConstants, snapshots,
+│   │                         AuditErrorMapper
 │   ├── port/in/              use cases we offer
 │   │   ├── command/          inbound inputs (8 *Command records)
 │   │   └── result/           inbound outputs (MediaView, QuotaView,
@@ -46,12 +59,15 @@ com.aigreentick.services.storage
 │   ├── inspection/           Tika, structural validation
 │   ├── ratelimit/            Redis Bucket4j
 │   ├── outbox/               dispatcher, handlers, reaper
+│   ├── audit/                AuditEventPublisher — the ONLY Kafka code
+│   ├── observability/        TraceContextFilter, RequestIdFilter, access log, health
 │   ├── client/waba/          outbound clients (transitional — ADR-009)
 │   └── lock/                 scheduler coordination
 │
 └── config/                   ← Spring wiring only, no logic
     ├── PropertiesConfig      registers the typed property records
     ├── SchedulingConfig      @EnableScheduling + a sized TaskScheduler
+    ├── AuditPublisherConfig  auditPublisherExecutor (bounded, no caller-runs)
     ├── SecurityConfig        filter chain order
     ├── StorageConfig         selects the active StoragePort
     ├── StartupAssertions     fail-fast configuration checks
@@ -144,7 +160,6 @@ no raw `JdbcTemplate` in the codebase.
 | `upload_session` | `UploadSessionEntity` | `UploadSessionJpaRepository` |
 | `idempotency_record` | `IdempotencyRecordEntity` | `IdempotencyJpaRepository` |
 | `outbox_event` | `OutboxEventEntity` | `OutboxJpaRepository` |
-| `media_audit` | `MediaAuditEntity` | `MediaAuditJpaRepository` |
 | `scheduler_lock` | `SchedulerLockEntity` | `SchedulerLockJpaRepository` |
 
 ### Where `@Modifying` is used, and the rule that comes with it

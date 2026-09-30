@@ -1,5 +1,12 @@
 # 07 — Messaging Design
 
+> **Scope.** This document covers *domain* events (`media.created`,
+> `media.deleted`, …), which stay on the transactional outbox. *Audit* events are
+> a separate, platform-wide stream published to Kafka (`apargo.audit.event`) after
+> commit on a dedicated thread pool, best effort — see
+> [01-architecture.md §8](01-architecture.md#8-audit-events). Nothing in this
+> service consumes from Kafka.
+
 ## 1. Decision: transactional outbox, no broker
 
 **No Kafka in Phases 1–3.** A database outbox table with a poller.

@@ -191,6 +191,12 @@ CREATE TABLE media_audit (
 Append-only. **The application's database role has no `UPDATE` or `DELETE` grant on
 this table** — a convention that can be violated is not an audit trail.
 
+> **Superseded (2026-09-30).** The service no longer writes this table: audit
+> events are published to Kafka (`apargo.audit.event`) per the platform audit
+> standard — see [01-architecture.md §8](01-architecture.md#8-audit-events). The
+> table and its migration (V6) are kept, so existing rows stay queryable and no
+> destructive migration is needed.
+
 ### 4.5 `scheduler_lock`
 
 ```sql
@@ -245,9 +251,9 @@ and enforces the invariant in the engine. See [ADR-003](adr/ADR-003-quota-concur
 
 | Operation | Transaction |
 |---|---|
-| Initiate upload | quota reserve + `media` PENDING + `upload_session` + audit |
-| Complete upload | `media` → ACTIVE + session → COMMITTED + outbox + audit |
-| Delete | `media` → DELETED + quota release + outbox + audit |
+| Initiate upload | quota reserve + `media` PENDING + `upload_session` (audit event sent after commit) |
+| Complete upload | `media` → ACTIVE + session → COMMITTED + outbox (audit event sent after commit) |
+| Delete | `media` → DELETED + quota release + outbox (audit event sent after commit) |
 | Purge | `media` → PURGED (after the object is confirmed gone) |
 | Reserve → object write | **Separate.** The storage call is outside any transaction. |
 

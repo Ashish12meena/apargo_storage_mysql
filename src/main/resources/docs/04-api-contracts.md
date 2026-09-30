@@ -50,7 +50,7 @@ tenant as resource identity; that is the one documented exception.
   "message": "Upload complete",      // human readable, may be reworded freely
   "data":    { },                    // lists: { "items": [...], "pagination": {...} }
   "errors":  [],
-  "meta":    { "requestId": "3f2a…", "timestamp": "2026-01-15T10:30:00Z" }
+  "meta":    { "requestId": "3f2a…", "traceId": "4bf92f35…", "timestamp": "2026-01-15T10:30:00Z" }
 }
 // error
 {
@@ -60,9 +60,14 @@ tenant as resource identity; that is the one documented exception.
   "message": "Request has invalid fields.",
   "data":    null,
   "errors":  [ { "field": "size", "code": "OUT_OF_RANGE", "message": "must be less than or equal to 100" } ],
-  "meta":    { "requestId": "3f2a…", "timestamp": "2026-01-15T10:30:00Z", "path": "/api/v1/media" }
+  "meta":    { "requestId": "3f2a…", "traceId": "4bf92f35…", "timestamp": "2026-01-15T10:30:00Z", "path": "/api/v1/media" }
 }
 ```
+
+`meta.traceId` is the backend trace id (32 hex characters): quote it when
+reporting a problem — it finds the request's log lines and audit events. It is
+never sent as a `traceparent` response header, and a `traceparent` sent by a
+client on `/api/**` is ignored (only `/internal/**` continues a caller's trace).
 
 **Clients decide success from the HTTP status (or `success`), and use `code`
 only for specific handling.** `errors[].code` is one of `REQUIRED`,
@@ -304,7 +309,7 @@ beyond `security.api-key-enabled`, which production rejects.
 
 `202`, not `200`: the work is accepted, not performed. Reporting success before the
 files are gone would be a claim a compliance auditor could act on. Track completion
-by the `tenant.teardown.completed` event, the `jobId` in `media_audit`, or the
+by the `tenant.teardown.completed` event, the `STORAGE_TEARDOWN_COMPLETED` audit event for the `jobId`, or the
 quota at `statusUrl` falling to zero.
 
 Both are processed in bounded batches through the outbox, so a crash resumes rather

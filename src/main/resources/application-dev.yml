@@ -55,7 +55,7 @@ security:
 
 logging:
   level:
-    com.aigreentick.services.storage: DEBUG
+    com.apargo.services.storage: DEBUG
     # Uncomment to see Hibernate's statements and their bound parameters. Both
     # loggers, via the group declared in application.yml — setting only
     # org.hibernate.SQL prints every parameter as '?'.

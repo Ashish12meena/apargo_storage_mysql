@@ -59,7 +59,7 @@ What is available against it:
 |---|---|
 | `security.clients[].fixed-org-id` | Pins a client to one org; headers ignored entirely. Removes the risk **completely** for that caller. |
 | Startup warning | Every client NOT pinned is logged at boot, by name. |
-| `media_audit.actor_id` | Every action attributed to a client id, so a misbehaving caller is identifiable afterwards. |
+| Audit events (`apargo.audit.event`) | Every change attributed to an actor — the user (`X-User-Id`) or, on `/internal/**`, the authenticated client id — so a misbehaving caller is identifiable afterwards. |
 
 Closing it properly requires the tenant to be **cryptographically asserted by the
 gateway** rather than claimed by the caller — the withdrawn JWT design in
