@@ -39,10 +39,10 @@ management:
         # env, beans, loggers and configprops leak bound configuration including
         # secrets. The predecessor exposed them in every environment with
         # show-details: always.
-        include: health,info,metrics,prometheus
+        include: ${MANAGEMENT_ENDPOINTS:health,info,metrics,prometheus}
   endpoint:
     health:
-      show-details: never
+      show-details: ${MANAGEMENT_HEALTH_DETAILS:never}
 
 logging:
   # JSON on stdout. `logging.structured.format.console` is Spring Boot's own
@@ -65,8 +65,8 @@ logging:
         node-name: ${HOSTNAME:}
 
   level:
-    root: INFO
-    com.apargo.services.storage: ${LOG_LEVEL:INFO}
+    root: ${LOG_LEVEL_ROOT:INFO}
+    com.apargo.services.storage: ${LOG_LEVEL_APP:${LOG_LEVEL:INFO}}
 
   # The MDC (requestId, orgId, projectId, caller, userId) becomes real JSON
   # fields under this format rather than text inside a message, so an incident

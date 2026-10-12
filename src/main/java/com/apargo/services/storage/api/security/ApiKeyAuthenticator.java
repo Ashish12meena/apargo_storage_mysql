@@ -35,8 +35,16 @@ public class ApiKeyAuthenticator {
         this.meters = meters;
         for (SecurityProperties.Client client : properties.clients()) {
             if (client.key() == null || client.key().isBlank()) {
-                throw new IllegalStateException(
-                        "security.clients[" + client.id() + "].key is not set");
+                if (properties.apiKeyEnabled()) {
+                    throw new IllegalStateException(
+                            "security.clients[" + client.id() + "].key is not set");
+                }
+                // Auth is off, so no key is ever checked: a caller registered ahead of its key
+                // (INTERNAL_API_KEY_<CALLER> not yet supplied) must not stop the service starting.
+                // Turning auth on makes the same blank key a startup failure again.
+                log.warn("security.clients[{}].key is not set — client skipped while api key "
+                        + "authentication is disabled", client.id());
+                continue;
             }
             if (client.key().length() < 32) {
                 // A short shared secret is brute-forceable, and the whole model
@@ -54,8 +62,8 @@ public class ApiKeyAuthenticator {
         }
         log.info("api key authentication {} for {} client(s): {}",
                 properties.apiKeyEnabled() ? "ENABLED" : "DISABLED",
-                properties.clients().size(),
-                properties.clients().stream().map(SecurityProperties.Client::id).toList());
+                byKey.size(),
+                byKey.values().stream().map(c -> c.definition().id()).toList());
     }
 
     /**

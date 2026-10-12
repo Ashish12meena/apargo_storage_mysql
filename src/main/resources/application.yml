@@ -2,19 +2,27 @@ spring:
   application:
     name: storage-service
 
+  # Platform configuration standard (docs/configuration): shared infrastructure addresses come from
+  # ../platform.env, this service's own settings and secrets from ./.env (the later import wins).
+  # Real environment variables override both. Imported here, not in a profile file, so it applies to
+  # every profile.
+  config:
+    import:
+      - optional:file:${APARGO_PLATFORM_ENV:../platform.env}[.properties]
+      - optional:file:./.env[.properties]
 
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:dev}
 
-  
-
+  # DB_URL (full URL) wins; otherwise built from DB_HOST / DB_PORT / DB_NAME, falling back to the
+  # platform-wide MYSQL_HOST / MYSQL_PORT / MYSQL_DATABASE.
   datasource:
-    url: ${DB_URL:jdbc:mysql://localhost:3306/apargo_storage}
+    url: ${DB_URL:jdbc:mysql://${DB_HOST:${MYSQL_HOST:localhost}}:${DB_PORT:${MYSQL_PORT:3306}}/${DB_NAME:${MYSQL_DATABASE:apargo_storage}}}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:meenagaming12@#}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
-      maximum-pool-size: ${DB_POOL_MAX_SIZE:30}
+      maximum-pool-size: ${DB_POOL_MAX:${DB_POOL_MAX_SIZE:30}}
       minimum-idle: ${DB_POOL_MIN_IDLE:10}
       connection-timeout: 3000      # fail fast; do not queue behind an exhausted pool
       max-lifetime: 1500000         # 25 min, under any proxy or MySQL idle timeout
@@ -32,7 +40,8 @@ spring:
       # `update` is additive-only and best-effort — it will add a column but never
       # drop one, rename one, change a type, or backfill data — so it is safe only
       # while the database holds nothing anyone would miss.
-      ddl-auto: ${DDL_AUTO:update}
+      # JPA_DDL_AUTO is the platform-wide name; DDL_AUTO is still honoured.
+      ddl-auto: ${JPA_DDL_AUTO:${DDL_AUTO:update}}
     properties:
       hibernate:
         jdbc:
@@ -52,7 +61,7 @@ spring:
 
   data:
     redis:
-      host: ${REDIS_HOST:146.88.24.113}
+      host: ${REDIS_HOST:146.88.24.123}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       timeout: 2000
@@ -106,7 +115,7 @@ spring:
         max.block.ms: ${KAFKA_MAX_BLOCK_MS:10000}
 
 server:
-  port: ${SERVER_PORT:8030}
+  port: ${SERVER_PORT:${STORAGE_SERVICE_PORT:8030}}
   shutdown: graceful                # in-flight uploads drain on deploy
   tomcat:
     threads:
@@ -123,7 +132,10 @@ storage:
   max-files-per-batch: ${MAX_FILES_PER_BATCH:20}
   local:
     root-path: ${LOCAL_STORAGE_ROOT:./media-uploads}
-    base-url: ${LOCAL_STORAGE_BASE_URL:http://localhost:8030/api/v1/media/serve}
+    # Public URL of the serve endpoint, written into every media link (including the ones sent to
+    # Meta), so it must be reachable from outside. LOCAL_STORAGE_BASE_URL wins; otherwise it is
+    # built from the platform-wide STORAGE_SERVICE_URL in platform.env.
+    base-url: ${LOCAL_STORAGE_BASE_URL:${STORAGE_SERVICE_URL:http://localhost:8030}/api/v1/media/serve}
   s3:
     bucket: ${S3_BUCKET:}
     region: ${S3_REGION:ap-south-1}
@@ -239,23 +251,34 @@ outbox:
   poll-interval-ms: 1000
 
 security:
-  api-key-enabled: ${SECURITY_API_KEY_ENABLED:false}
+  # Internal API-key auth: off unless INTERNAL_API_AUTH_ENABLED=true (platform-wide switch;
+  # SECURITY_API_KEY_ENABLED is still honoured). The prod profile turns it on.
+  api-key-enabled: ${INTERNAL_API_AUTH_ENABLED:${SECURITY_API_KEY_ENABLED:false}}
   # Callers present their key in X-Internal-Api-Key (API Standard name, fixed
   # in HeaderNames). The pre-standard X-Api-Key is NOT accepted.
   #
-  # template-service sends its INTERNAL_API_KEY in X-Internal-Api-Key, so
-  # TEMPLATE_SERVICE_API_KEY here must hold the SAME value in every environment.
+  # Inbound keys are INTERNAL_API_KEY_<CALLER> (platform-wide naming); the older
+  # <CALLER>_SERVICE_API_KEY names are still honoured. Each must hold the same value as the key
+  # the caller sends (its STORAGE_SERVICE_API_KEY). A client whose key is blank is skipped while
+  # auth is off and fails startup once it is on (ApiKeyAuthenticator).
 
   clients:
     - id: template-service
-      key: ${TEMPLATE_SERVICE_API_KEY:f455bef899df21b059349ad8a0ca213e9918bfa82735ac80}
+      key: ${INTERNAL_API_KEY_TEMPLATE:${TEMPLATE_SERVICE_API_KEY:f455bef899df21b059349ad8a0ca213e9918bfa82735ac80}}
       scopes: [media:read, media:write, media:delete]
     - id: chat-service
-      key: ${CHAT_SERVICE_API_KEY:5f4bdca283a527b4d72bd8d09c69c02663f21ac5297d1f50}
+      key: ${INTERNAL_API_KEY_CHAT:${CHAT_SERVICE_API_KEY:5f4bdca283a527b4d72bd8d09c69c02663f21ac5297d1f50}}
       scopes: [media:read, media:write, media:delete]
     - id: org-service
-      key: ${ORG_SERVICE_API_KEY:0af44b2d352e08e03a41a808c2eccbf1c4823eaae1ccf08a}
+      key: ${INTERNAL_API_KEY_ORG:${ORG_SERVICE_API_KEY:0af44b2d352e08e03a41a808c2eccbf1c4823eaae1ccf08a}}
       scopes: [quota:admin, quota:read, tenant:teardown]
+    # contact-service (exports/imports) and messaging-service (media) already call this service.
+    - id: contact-service
+      key: ${INTERNAL_API_KEY_CONTACT:}
+      scopes: [media:read, media:write]
+    - id: messaging-service
+      key: ${INTERNAL_API_KEY_MESSAGING:}
+      scopes: [media:read, media:write]
 
 
 # ─── Audit events ──────────────────────────────────────────────────────────
@@ -307,10 +330,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: ${MANAGEMENT_ENDPOINTS:health,info,metrics,prometheus}
   endpoint:
     health:
-      show-details: when-authorized
+      show-details: ${MANAGEMENT_HEALTH_DETAILS:when-authorized}
       probes:
         enabled: true
       group:
@@ -377,7 +400,7 @@ logging:
     # The service itself. One knob for everything, then narrower knobs for the
     # layer you are actually debugging — so you can open up the storage adapter
     # without also getting every rate-limit decision.
-    com.apargo.services.storage: ${LOG_LEVEL:INFO}
+    com.apargo.services.storage: ${LOG_LEVEL_APP:${LOG_LEVEL:INFO}}
     com.apargo.services.storage.api: ${LOG_LEVEL_API:INFO}
     com.apargo.services.storage.application: ${LOG_LEVEL_APPLICATION:INFO}
     com.apargo.services.storage.infrastructure.storage: ${LOG_LEVEL_STORAGE:DEBUG}
@@ -393,12 +416,12 @@ logging:
     # ── Third-party noise ──────────────────────────────────────────────────
     # WARN, not INFO. The AWS SDK in particular logs per-request detail at
     # DEBUG that includes signed URLs.
-    org.hibernate.SQL: ${LOG_SQL:WARN}
-    org.hibernate.orm.jdbc.bind: WARN          # DEBUG here prints bound parameters
+    org.hibernate.SQL: ${LOG_LEVEL_SQL:${LOG_SQL:WARN}}
+    org.hibernate.orm.jdbc.bind: ${LOG_LEVEL_SQL_BIND:WARN}          # DEBUG here prints bound parameters
     org.hibernate.stat: WARN
     software.amazon.awssdk: WARN
     io.lettuce.core: WARN
-    org.apache.kafka: WARN                     # producer config dump and reconnect chatter
+    org.apache.kafka: ${LOG_LEVEL_KAFKA:WARN}                     # producer config dump and reconnect chatter
     org.apache.tika: WARN
     org.springframework.web: INFO
     org.springframework.jdbc.datasource.init: INFO
