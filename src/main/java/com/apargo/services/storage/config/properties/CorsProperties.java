@@ -23,12 +23,11 @@ import java.util.List;
  * </pre>
  *
  * <p>Credentials work in ALL of those, including {@code *}. That is the whole
- * reason {@code WebConfig} registers through {@code allowedOriginPatterns} rather
- * than {@code allowedOrigins}: the latter throws {@code IllegalArgumentException}
- * when {@code *} meets {@code allowCredentials}, and it throws from
- * {@code AbstractHandlerMapping#getHandler} — on every request, before any
- * controller — so the symptom is the entire API returning 400 with nothing
- * naming CORS. The pattern form echoes the request's actual {@code Origin} back
+ * reason the CorsFilter in {@code SecurityConfig} registers through
+ * {@code allowedOriginPatterns} rather than {@code allowedOrigins}: the latter
+ * throws {@code IllegalArgumentException} when {@code *} meets
+ * {@code allowCredentials}, on every cross-origin request, so the symptom is
+ * the entire API failing with nothing naming CORS. The pattern form echoes the request's actual {@code Origin} back
  * instead of a literal {@code *}, which is what the CORS specification requires,
  * so the pair is legal and no setting has to be silently overridden.
  *

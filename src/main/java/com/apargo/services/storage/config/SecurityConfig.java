@@ -4,6 +4,7 @@ import com.apargo.services.storage.api.error.ErrorResponseWriter;
 import com.apargo.services.storage.api.security.ApiKeyAuthenticator;
 import com.apargo.services.storage.api.security.InternalCallerFilter;
 import com.apargo.services.storage.api.security.TenantContextFilter;
+import com.apargo.services.storage.config.properties.CorsProperties;
 import com.apargo.services.storage.config.properties.RateLimitProperties;
 import com.apargo.services.storage.config.properties.RequestLoggingProperties;
 import com.apargo.services.storage.infrastructure.observability.RequestLoggingFilter;
@@ -16,11 +17,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.CorsFilter;
 
 /**
  * Filter chain, in order:
  *
  * <pre>
+ *  -1 CorsFilter             answers browser preflights on /api/**; headers on every /api/** response
  *   0 TraceContextFilter     backend trace id (traceparent continued on /internal/** only)
  *   1 RequestIdFilter        X-Request-Id + MDC, so even a 401 carries a request id
  *   2 RequestLoggingFilter   access log; wraps the three below so rejections log
@@ -51,6 +56,50 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class SecurityConfig {
+
+    /**
+     * CORS for the tenant-facing API, as the first filter in the chain.
+     *
+     * <p>It must run before {@code TenantContextFilter}. A browser preflight
+     * carries none of the tenant or API-key headers, so when CORS lived in
+     * {@code WebMvcConfigurer#addCorsMappings} the preflight was rejected with a
+     * 400/401 before the dispatcher ever saw it, and that rejection had no
+     * {@code Access-Control-*} headers: the browser reported "Failed to fetch".
+     * Here the preflight is answered before authentication, and the 400 / 401 /
+     * 413 / 429 written by later filters carry CORS headers too, so the page
+     * sees the real error. Requests without an {@code Origin} header (every
+     * service-to-service call) pass through untouched.
+     *
+     * <p>Registered with {@code allowedOriginPatterns}, never {@code allowedOrigins}:
+     * the pattern form echoes the request's actual {@code Origin} back rather
+     * than a literal {@code *}, which is what the CORS specification requires
+     * alongside credentials. So one code path serves every case ({@code *}, one
+     * origin, several, or a subdomain pattern) with credentials honoured in all.
+     *
+     * <p>Mapped to {@code /api/**} only. {@code /internal/**} is excluded
+     * deliberately: it is reached by services, never by a browser, and a preflight
+     * succeeding there would be a signal that something is calling it from a page.
+     */
+    @Bean
+    public FilterRegistrationBean<CorsFilter> corsFilterRegistration(CorsProperties cors) {
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        if (cors.enabled()) {
+            CorsConfiguration config = new CorsConfiguration();
+            config.setAllowedOriginPatterns(cors.allowedOrigins());
+            config.setAllowedMethods(cors.allowedMethods());
+            config.setAllowedHeaders(cors.allowedHeaders());
+            config.setExposedHeaders(cors.exposedHeaders());
+            config.setAllowCredentials(cors.allowCredentials());
+            config.setMaxAge(cors.maxAgeSeconds());
+            source.registerCorsConfiguration("/api/**", config);
+        }
+        var registration = new FilterRegistrationBean<>(new CorsFilter(source));
+        // CorsFilter ends every preflight it sees, configured path or not, so it
+        // is mounted on /api/* alone: everything else reaches the chain as before.
+        registration.addUrlPatterns("/api/*");
+        registration.setOrder(-1);
+        return registration;
+    }
 
     @Bean
     public FilterRegistrationBean<TraceContextFilter> traceContextFilterRegistration() {
