@@ -198,6 +198,9 @@ media:
       DOCUMENT:
         - application/pdf
         - text/plain
+        # Contact imports (CSV upload, campaign audiences). Detection names a .csv
+        # file text/csv, so without this every CSV import was refused with 415.
+        - text/csv
         - application/msword
         - application/vnd.openxmlformats-officedocument.wordprocessingml.document
         - application/vnd.ms-excel
