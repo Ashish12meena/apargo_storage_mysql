@@ -94,6 +94,14 @@ Bodies above `media.validation.proxied-upload-threshold-bytes` are rejected with
 `413` and a pointer to the direct-upload flow. Proxying large files is what makes
 request duration a function of file size.
 
+Optional `X-Quota-Policy: overdraft` — count the file against the quota but never
+refuse it for quota (no `507`, and no refusal for an unprovisioned tenant). Only
+for callers holding `quota:overdraft`; anyone else sending it gets `403`. Granted
+to `messaging-service`, which stores customers' inbound WhatsApp attachments this
+way: a full quota must not lose what a customer sent. Usage can then exceed the
+limit; the threshold events still fire. Any other value, or no header, enforces the
+quota as before.
+
 ### `POST /api/v1/media/upload/batch` — NEW, batch proxied upload
 
 Many small files in ONE request. Built for `template-service`, which downloads

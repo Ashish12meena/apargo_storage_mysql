@@ -46,6 +46,16 @@ public final class HeaderNames {
     /** User performing the action, when a user is acting. Logged, not trusted for authorisation. */
     public static final String USER_ID = "X-User-Id";
 
+    /**
+     * {@code overdraft} on {@code POST /api/v1/media/upload}: count the bytes against the
+     * quota but do not refuse the upload when it is full. Honoured only for a caller holding
+     * {@code quota:overdraft}; absent (or any other value) means the quota is enforced.
+     */
+    public static final String QUOTA_POLICY = "X-Quota-Policy";
+
+    /** The one {@link #QUOTA_POLICY} value that changes anything. */
+    public static final String QUOTA_POLICY_OVERDRAFT = "overdraft";
+
     public static final String RATELIMIT_LIMIT = "X-RateLimit-Limit";
     public static final String RATELIMIT_REMAINING = "X-RateLimit-Remaining";
     public static final String RATELIMIT_RESET = "X-RateLimit-Reset";

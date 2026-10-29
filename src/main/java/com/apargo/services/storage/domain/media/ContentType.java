@@ -11,16 +11,27 @@ public record ContentType(String declared, String detected) {
 
     private static final String OCTET_STREAM = "application/octet-stream";
 
-    /** Aliases normalised in ONE place. {@code image/jpg} is not a real MIME type. */
-    private static final Map<String, String> ALIASES = Map.of(
-            "image/jpg", "image/jpeg",
-            "image/pjpeg", "image/jpeg",
-            "image/x-png", "image/png",
-            "audio/mp3", "audio/mpeg",
-            "audio/x-m4a", "audio/mp4",
-            "video/x-mp4", "video/mp4",
-            "application/x-pdf", "application/pdf",
-            "text/xml", "application/xml");
+    /**
+     * Aliases normalised in ONE place. {@code image/jpg} is not a real MIME type.
+     *
+     * <p>The codec names Tika reports for an Ogg file — {@code audio/opus},
+     * {@code audio/vorbis} — are aliased to the container, {@code audio/ogg}: that is
+     * the registered type for an Ogg file whatever codec it carries (RFC 7845), and
+     * it is what WhatsApp labels every voice note. Without it each voice note was
+     * refused as a type mismatch. {@code audio/x-aac} is Tika's name for ADTS AAC.
+     */
+    private static final Map<String, String> ALIASES = Map.ofEntries(
+            Map.entry("image/jpg", "image/jpeg"),
+            Map.entry("image/pjpeg", "image/jpeg"),
+            Map.entry("image/x-png", "image/png"),
+            Map.entry("audio/mp3", "audio/mpeg"),
+            Map.entry("audio/x-m4a", "audio/mp4"),
+            Map.entry("audio/opus", "audio/ogg"),
+            Map.entry("audio/vorbis", "audio/ogg"),
+            Map.entry("audio/x-aac", "audio/aac"),
+            Map.entry("video/x-mp4", "video/mp4"),
+            Map.entry("application/x-pdf", "application/pdf"),
+            Map.entry("text/xml", "application/xml"));
 
     public static String normalise(String raw) {
         if (raw == null || raw.isBlank()) {

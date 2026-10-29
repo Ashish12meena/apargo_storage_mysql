@@ -281,7 +281,9 @@ security:
       scopes: [media:read, media:write]
     - id: messaging-service
       key: ${INTERNAL_API_KEY_MESSAGING:}
-      scopes: [media:read, media:write]
+      # quota:overdraft: customers' inbound WhatsApp attachments are stored with
+      # X-Quota-Policy: overdraft — counted against the quota, never refused by it.
+      scopes: [media:read, media:write, quota:overdraft]
 
 
 # ─── Audit events ──────────────────────────────────────────────────────────

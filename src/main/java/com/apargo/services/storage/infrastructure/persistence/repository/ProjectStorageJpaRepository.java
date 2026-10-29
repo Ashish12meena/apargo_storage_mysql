@@ -25,6 +25,16 @@ interface ProjectStorageJpaRepository
     int reserve(@Param("orgId") Long orgId, @Param("projectId") Long projectId,
                 @Param("size") long size);
 
+    /** {@link #reserve} without the limit: counts, never refuses. 0 = no quota row. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE ProjectStorageEntity p
+               SET p.usedBytes = p.usedBytes + :size, p.version = p.version + 1
+             WHERE p.orgId = :orgId AND p.projectId = :projectId
+            """)
+    int reserveOverdraft(@Param("orgId") Long orgId, @Param("projectId") Long projectId,
+                         @Param("size") long size);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             UPDATE ProjectStorageEntity p

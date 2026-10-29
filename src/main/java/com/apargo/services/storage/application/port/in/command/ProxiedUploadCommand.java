@@ -17,6 +17,8 @@ import java.util.function.Supplier;
  * to a temp file merely to learn the content length — the predecessor's temp-file
  * round trip cost a full extra disk write and read on every upload.
  *
+ * @param quotaOverdraft count the bytes against the quota but never refuse them for it
+ *                       ({@code X-Quota-Policy: overdraft}, scope {@code quota:overdraft})
  * @throws UncheckedIOException from {@code content.get()} if the stream cannot be opened
  */
 public record ProxiedUploadCommand(
@@ -26,5 +28,6 @@ public record ProxiedUploadCommand(
         String declaredContentType,
         ByteSize size,
         Supplier<InputStream> content,
-        String idempotencyKey) {
+        String idempotencyKey,
+        boolean quotaOverdraft) {
 }

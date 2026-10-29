@@ -168,7 +168,7 @@ public class MediaUploadService implements UploadMediaUseCase {
         Reservation reservation = transactionTemplate.execute(status ->
                 reserveAndCreatePending(command.tenant(), command.actor(), key, command.originalFilename(),
                         command.size(), command.declaredContentType(), inspected.mediaType(),
-                        UploadMode.PROXIED, command.idempotencyKey()));
+                        UploadMode.PROXIED, command.idempotencyKey(), command.quotaOverdraft()));
         if (reservation == null) {
             throw new IllegalStateException("reservation transaction returned no result");
         }
@@ -243,7 +243,7 @@ public class MediaUploadService implements UploadMediaUseCase {
         Reservation reservation = transactionTemplate.execute(status ->
                 reserveAndCreatePending(command.tenant(), command.actor(), key, command.originalFilename(),
                         command.declaredSize(), command.declaredContentType(), declaredType, mode,
-                        command.idempotencyKey()));
+                        command.idempotencyKey(), false));
         if (reservation == null) {
             throw new IllegalStateException("reservation transaction returned no result");
         }
@@ -359,13 +359,22 @@ public class MediaUploadService implements UploadMediaUseCase {
 
     // ────────────────────────────── SHARED ──────────────────────────────
 
+    /**
+     * @param quotaOverdraft count {@code size} against the quota without refusing it — see
+     *                       {@link QuotaApplicationService#reserveOverdraft}
+     */
     protected Reservation reserveAndCreatePending(TenantRef tenant,
                                                   Actor actor,
                                                   StorageKey key, String filename, ByteSize size,
                                                   String declaredContentType, MediaType mediaType,
-                                                  UploadMode mode, String idempotencyKey) {
+                                                  UploadMode mode, String idempotencyKey,
+                                                  boolean quotaOverdraft) {
         Instant now = clock.now();
-        quotaService.reserveOrThrow(tenant, size);
+        if (quotaOverdraft) {
+            quotaService.reserveOverdraft(tenant, size);
+        } else {
+            quotaService.reserveOrThrow(tenant, size);
+        }
 
         UploadSession session = UploadSession.open(tenant, key, mode, size, now,
                 now.plus(quotaProperties.uploadSessionTtl()), idempotencyKey);

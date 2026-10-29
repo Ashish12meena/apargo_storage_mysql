@@ -21,6 +21,18 @@ public enum Scope {
     QUOTA_ADMIN("quota:admin"),
 
     /**
+     * May ask for an upload to be counted against the quota but never refused by it
+     * ({@code X-Quota-Policy: overdraft}).
+     *
+     * <p>For content the platform is obliged to keep whatever the tenant's plan says:
+     * a customer's WhatsApp attachment, which messaging-service stores on receipt. A
+     * full quota must not make the platform lose what a customer sent. The bytes are
+     * still counted, so usage shows the overrun and the threshold alerts fire.
+     * Service credentials only, never end users.
+     */
+    QUOTA_OVERDRAFT("quota:overdraft"),
+
+    /**
      * Wipes every file for a project or an organisation.
      *
      * <p>Deliberately NOT implied by {@code media:delete}. Deleting a file and

@@ -64,6 +64,25 @@ public class QuotaApplicationService implements ManageQuotaUseCase {
         }
     }
 
+    /**
+     * Counts {@code amount} against the quota and never refuses it ({@code X-Quota-Policy:
+     * overdraft}).
+     *
+     * <p>For content the platform has to keep whatever the tenant's plan allows — a customer's
+     * WhatsApp attachment, stored by messaging-service on receipt. Refusing it would not free any
+     * space; it would only lose what the customer sent. Usage may end above the limit, which is
+     * what the threshold alerts emitted after the upload are for. A scope with no quota row is
+     * skipped rather than refused: there is nothing to count against, and the nightly
+     * reconciliation recomputes usage from the stored media either way.
+     *
+     * <p>{@code MANDATORY} for the same reason as {@link #reserveOrThrow}: the count and the
+     * PENDING media row commit together, so the compensating release always has a row to undo.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void reserveOverdraft(TenantRef tenant, ByteSize amount) {
+        quotaRepository.reserveOverdraft(tenant, amount);
+    }
+
     @Transactional(propagation = Propagation.MANDATORY)
     public void release(TenantRef tenant, ByteSize amount) {
         if (amount == null || amount.isZero()) {

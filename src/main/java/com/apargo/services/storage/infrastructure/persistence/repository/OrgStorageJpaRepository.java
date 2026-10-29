@@ -31,6 +31,15 @@ interface OrgStorageJpaRepository extends JpaRepository<OrgStorageEntity, Long> 
             """)
     int reserve(@Param("orgId") Long orgId, @Param("size") long size);
 
+    /** {@link #reserve} without the limit: counts, never refuses. 0 = no quota row. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE OrgStorageEntity o
+               SET o.usedBytes = o.usedBytes + :size, o.version = o.version + 1
+             WHERE o.orgId = :orgId
+            """)
+    int reserveOverdraft(@Param("orgId") Long orgId, @Param("size") long size);
+
     /** Release floors at zero rather than going negative. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""

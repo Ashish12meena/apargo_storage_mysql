@@ -21,6 +21,13 @@ public interface QuotaRepositoryPort {
     /** Atomic and all-or-nothing across both scopes. Locks PROJECT then ORG. */
     QuotaReservation reserve(TenantRef tenant, ByteSize amount);
 
+    /**
+     * Adds {@code amount} to both scopes' usage with no limit check: the overdraft policy, which
+     * counts and never refuses. Usage may end above the limit. A scope with no quota row is left
+     * alone. Locks PROJECT then ORG, like {@link #reserve}.
+     */
+    void reserveOverdraft(TenantRef tenant, ByteSize amount);
+
     /** Idempotent-safe release. Floors at zero rather than going negative. */
     void release(TenantRef tenant, ByteSize amount);
 

@@ -121,10 +121,13 @@ public class MediaController {
     @RequiresIdempotencyKey
     @PostMapping(path = "/upload", consumes = MULTIPART)
     @Operation(summary = "Upload a small file through the service",
-            description = "201 Created with Location: /api/v1/media/{id}. Requires X-Idempotency-Key.")
+            description = "201 Created with Location: /api/v1/media/{id}. Requires X-Idempotency-Key. "
+                    + "X-Quota-Policy: overdraft (callers with quota:overdraft only) counts the file "
+                    + "against the quota but does not refuse it when the quota is full.")
     public ResponseEntity<ApiResponse<MediaResponse>> upload(
             @RequestPart("file") MultipartFile file,
-            @RequestHeader(value = HeaderNames.IDEMPOTENCY_KEY, required = false) String idempotencyKey) {
+            @RequestHeader(value = HeaderNames.IDEMPOTENCY_KEY, required = false) String idempotencyKey,
+            @RequestHeader(value = HeaderNames.QUOTA_POLICY, required = false) String quotaPolicy) {
 
         // Entry marker. Reaching this line proves the filter chain passed, the
         // multipart part named "file" was resolved, and argument binding
@@ -138,13 +141,23 @@ public class MediaController {
         TenantPrincipal principal = TenantContext.require();
         guard.requireScope(principal, Scope.MEDIA_WRITE);
 
-        log.info("upload authorised: org={} project={} actor={}",
-                principal.tenant().orgId(), principal.tenant().projectId(), principal.userId());
+        // Asked for explicitly on each request, never implied by the credential, so the
+        // same client's other uploads keep the ordinary quota. A caller without the
+        // scope that asks for it is refused rather than silently given the default.
+        boolean quotaOverdraft = quotaPolicy != null
+                && HeaderNames.QUOTA_POLICY_OVERDRAFT.equalsIgnoreCase(quotaPolicy.trim());
+        if (quotaOverdraft) {
+            guard.requireScope(principal, Scope.QUOTA_OVERDRAFT);
+        }
+
+        log.info("upload authorised: org={} project={} actor={} quotaOverdraft={}",
+                principal.tenant().orgId(), principal.tenant().projectId(), principal.userId(),
+                quotaOverdraft);
 
         MediaView view = uploadUseCase.uploadProxied(new ProxiedUploadCommand(
                 principal.tenant(), actor(principal), file.getOriginalFilename(),
                 file.getContentType(), ByteSize.of(file.getSize()),
-                () -> openStream(file), idempotencyKey));
+                () -> openStream(file), idempotencyKey, quotaOverdraft));
 
         return Responses.created(URI.create(ApiPaths.mediaLocation(view.id())),
                 "Upload complete", mapper.toResponse(view));

@@ -62,6 +62,18 @@ public class QuotaRepositoryAdapter implements QuotaRepositoryPort {
         return new QuotaReservation.Reserved(tenant, amount);
     }
 
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void reserveOverdraft(TenantRef tenant, ByteSize amount) {
+        // Same lock order as reserve(): PROJECT, then ORG.
+        int project = projectRepo.reserveOverdraft(tenant.orgId(), tenant.projectId(), amount.value());
+        int org = orgRepo.reserveOverdraft(tenant.orgId(), amount.value());
+        if (project == 0 || org == 0) {
+            log.info("overdraft upload for {} not counted at {} scope: no quota row",
+                    tenant, project == 0 ? "project" : "org");
+        }
+    }
+
     private QuotaReservation diagnose(QuotaScope scope, TenantRef tenant, ByteSize requested,
                                       Optional<Quota> quota) {
         return quota

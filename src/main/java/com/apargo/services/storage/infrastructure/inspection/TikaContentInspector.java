@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -30,6 +32,17 @@ import lombok.extern.slf4j.Slf4j;
 public class TikaContentInspector implements ContentInspectorPort {
 
     private static final String OCTET_STREAM = "application/octet-stream";
+    private static final String QUICKTIME = "video/quicktime";
+    private static final String MP4 = "video/mp4";
+
+    /**
+     * ISO base media major brands that are MP4, not QuickTime. Tika 2.9 reports a file
+     * whose {@code ftyp} brand is {@code isom} — the brand most Android phones and
+     * WhatsApp write — as {@code video/quicktime}, and storage refused it. A real
+     * QuickTime file has the brand {@code qt  }, which is not in this list.
+     */
+    private static final Set<String> MP4_BRANDS = Set.of(
+            "isom", "iso2", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1", "dash", "M4V ", "MSNV");
 
     private final Detector detector;
 
@@ -54,10 +67,21 @@ public class TikaContentInspector implements ContentInspectorPort {
         }
         try (InputStream stream = new ByteArrayInputStream(header)) {
             MediaType type = detector.detect(stream, metadata);
-            return type == null ? OCTET_STREAM : type.getBaseType().toString();
+            String detected = type == null ? OCTET_STREAM : type.getBaseType().toString();
+            return QUICKTIME.equals(detected) && hasMp4Brand(header) ? MP4 : detected;
         } catch (IOException e) {
             log.warn("content detection failed, treating as octet-stream: {}", e.toString());
             return OCTET_STREAM;
         }
+    }
+
+    /** {@code ftyp} box at offset 4, major brand at offset 8. */
+    static boolean hasMp4Brand(byte[] header) {
+        if (header.length < 12) {
+            return false;
+        }
+        String box = new String(header, 4, 4, StandardCharsets.ISO_8859_1);
+        String brand = new String(header, 8, 4, StandardCharsets.ISO_8859_1);
+        return "ftyp".equals(box) && MP4_BRANDS.contains(brand);
     }
 }

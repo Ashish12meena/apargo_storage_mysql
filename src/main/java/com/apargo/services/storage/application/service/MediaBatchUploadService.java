@@ -134,7 +134,7 @@ public class MediaBatchUploadService implements BatchUploadMediaUseCase {
                 MediaView view = uploadUseCase.uploadProxied(new ProxiedUploadCommand(
                         command.tenant(), command.actor(), file.originalFilename(),
                         file.declaredContentType(), file.size(), file.content(),
-                        command.idempotencyKeyForIndex(index)));
+                        command.idempotencyKeyForIndex(index), false));
 
                 results.add(BatchUploadView.ItemView.success(file.originalFilename(), view));
                 successCount++;
